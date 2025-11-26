@@ -1,0 +1,4 @@
+google-genai
+Pillow
+python-dotenv
+google-cloud-aiplatform

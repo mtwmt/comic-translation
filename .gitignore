@@ -1,0 +1,56 @@
+# 環境變數檔案（包含 API Key 等敏感資訊）
+.env
+.env.local
+.env.*.local
+
+# Python 相關
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller 打包相關
+*.spec
+build/
+dist/
+
+# 虛擬環境
+venv/
+ENV/
+env/
+.venv
+
+# IDE 相關
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 作業系統相關
+.DS_Store
+Thumbs.db
+
+# 輸出檔案（處理後的圖片）
+input/
+output/
+*.log
+
+# GUI 設定檔（包含使用者個人路徑）
+gui_config.txt
