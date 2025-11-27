@@ -38,6 +38,7 @@ env/
 
 # IDE 相關
 .vscode/
+!.vscode/settings.json
 .idea/
 *.swp
 *.swo
@@ -54,3 +55,18 @@ output/
 
 # GUI 設定檔（包含使用者個人路徑）
 gui_config.txt
+
+# Node.js / Angular
+node_modules/
+dist/
+tmp/
+out-tsc/
+bazel-out/
+test-files/
+.angular/
+.cache/
+.browserslistrc
+.editorconfig
+.npmrc
+*.log
+package-lock.json

@@ -1,0 +1,44 @@
+<div class="drawer">
+  <input id="main-drawer" type="checkbox" class="drawer-toggle" />
+  <div class="drawer-content flex flex-col min-h-screen bg-base-200">
+    <!-- Navbar -->
+    <div class="navbar bg-base-100 shadow-sm">
+      <div class="flex-1">
+        <a class="btn btn-ghost text-xl gap-2">
+          <span class="text-primary font-bold">Comic</span>
+          <span>Translator</span>
+        </a>
+      </div>
+      <div class="flex-none">
+        <ul class="menu menu-horizontal px-1 gap-2">
+          <li>
+            <a routerLink="/translator" routerLinkActive="active" class="gap-2">
+              <lucide-icon name="languages" [size]="18"></lucide-icon>
+              翻譯器
+            </a>
+          </li>
+          <li>
+            <a routerLink="/settings" routerLinkActive="active" class="gap-2">
+              <lucide-icon name="settings" [size]="18"></lucide-icon>
+              設定
+            </a>
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Main Content -->
+    <main class="flex-1 p-4 md:p-6">
+      <div class="container mx-auto max-w-7xl">
+        <router-outlet></router-outlet>
+      </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer footer-center p-4 bg-base-300 text-base-content">
+      <aside>
+        <p>Copyright © 2025 - Comic Translator</p>
+      </aside>
+    </footer>
+  </div>
+</div>

@@ -1,0 +1,32 @@
+<div class="max-w-2xl mx-auto space-y-6">
+    <div>
+        <h1 class="text-2xl font-bold">設定</h1>
+        <p class="text-base-content/70">管理 API 金鑰與翻譯偏好</p>
+    </div>
+
+    <div class="card bg-base-100 shadow-sm border border-base-200">
+        <div class="card-body">
+            <h2 class="card-title text-lg mb-4">API 設定</h2>
+
+            <form [formGroup]="settingsForm" (ngSubmit)="saveSettings()">
+                <div class="form-control w-full">
+                    <label class="label">
+                        <span class="label-text font-medium">Gemini API Key</span>
+                    </label>
+                    <input type="password" formControlName="apiKey" placeholder="輸入您的 Google Gemini API Key"
+                        class="input input-bordered w-full" [class.input-error]="isFieldInvalid('apiKey')" />
+                    <label class="label" *ngIf="isFieldInvalid('apiKey')">
+                        <span class="label-text-alt text-error">請輸入有效的 API Key</span>
+                    </label>
+                </div>
+
+                <div class="card-actions justify-end mt-6">
+                    <button type="submit" class="btn btn-primary gap-2" [disabled]="settingsForm.invalid || isSaving">
+                        <lucide-icon name="save" [size]="18"></lucide-icon>
+                        {{ isSaving ? '儲存中...' : '儲存設定' }}
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
