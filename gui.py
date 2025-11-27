@@ -18,7 +18,7 @@ class ComicTranslatorGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("🎨 AI 漫畫翻譯工具")
-        self.root.geometry("820x780")
+        self.root.geometry("820x900")
         self.root.resizable(False, False)
         # self.root.minsize(860, 750)
 
@@ -31,11 +31,11 @@ class ComicTranslatorGUI:
         self.output_dir_var = tk.StringVar()
         self.is_processing = False
 
-        # 載入上次的設定
-        self.load_config()
-
         # 建立介面
         self.create_widgets()
+
+        # 載入上次的設定（需在 create_widgets 之後，因為需要存取 text widgets）
+        self.load_config()
 
     def setup_logging(self):
         """設定 logging"""
@@ -54,6 +54,9 @@ class ComicTranslatorGUI:
                         self.output_dir_var.set(lines[1].strip())
             except:
                 pass
+
+        # 載入翻譯配置
+        self.load_translation_config()
 
     def save_config(self):
         """儲存設定"""
@@ -100,15 +103,38 @@ class ComicTranslatorGUI:
         ttk.Button(folder_frame, text="瀏覽...", command=self.browse_output_dir, width=10).grid(row=1, column=2)
 
         # 自訂翻譯設定區域
-        custom_frame = ttk.LabelFrame(main_frame, text="自訂翻譯設定 (選填)", padding="3")
+        custom_frame = ttk.LabelFrame(main_frame, text="自訂翻譯設定 (選填)", padding="5")
         custom_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 8))
 
-        # 人名對照表
-        ttk.Label(custom_frame, text="人名對照表 (格式：原文=中文，一行一個)").grid(row=0, column=0, sticky=tk.W, pady=(0, 3))
+        # 全域設定 - 人名對照（套用到所有圖片）
+        global_label = ttk.Label(custom_frame, text="📌 全域設定 - 人名對照（套用到所有圖片）", font=('Arial', 10, 'bold'))
+        global_label.grid(row=0, column=0, sticky=tk.W, pady=(0, 3))
 
-        self.name_mapping_text = scrolledtext.ScrolledText(custom_frame, width=75, height=4, font=('Consolas', 9))
-        self.name_mapping_text.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 3))
-        self.name_mapping_text.insert('1.0', '# 範例：\n# サトシ=小智\n# ピカチュウ=皮卡丘\n# John=約翰')
+        ttk.Label(custom_frame, text="格式：原文=中文（一行一個）", foreground="gray").grid(row=1, column=0, sticky=tk.W, pady=(0, 3))
+
+        self.global_config_text = scrolledtext.ScrolledText(custom_frame, width=75, height=3, font=('Consolas', 9))
+        self.global_config_text.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 8))
+        self.global_config_text.insert('1.0', '# 範例：サトシ=小智')
+
+        # 全域額外指示
+        global_prompt_label = ttk.Label(custom_frame, text="📌 全域額外指示（套用到所有圖片）", font=('Arial', 10, 'bold'))
+        global_prompt_label.grid(row=3, column=0, sticky=tk.W, pady=(0, 3))
+
+        ttk.Label(custom_frame, text="給 AI 的額外翻譯要求（一行一個）", foreground="gray").grid(row=4, column=0, sticky=tk.W, pady=(0, 3))
+
+        self.global_prompt_text = scrolledtext.ScrolledText(custom_frame, width=75, height=2, font=('Consolas', 9))
+        self.global_prompt_text.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 8))
+        self.global_prompt_text.insert('1.0', '# 範例：使用輕鬆幽默語氣')
+
+        # 特定圖片設定（針對個別圖片）
+        specific_label = ttk.Label(custom_frame, text="🎯 特定圖片設定（針對個別圖片）", font=('Arial', 10, 'bold'))
+        specific_label.grid(row=6, column=0, sticky=tk.W, pady=(0, 3))
+
+        ttk.Label(custom_frame, text="格式：檔名=額外要求（一行一個）", foreground="gray").grid(row=7, column=0, sticky=tk.W, pady=(0, 3))
+
+        self.specific_config_text = scrolledtext.ScrolledText(custom_frame, width=75, height=3, font=('Consolas', 9))
+        self.specific_config_text.grid(row=8, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 3))
+        self.specific_config_text.insert('1.0', '# 範例：page001.jpg=保留日文擬聲詞')
 
         # 控制按鈕區域
         control_frame = ttk.Frame(main_frame)
@@ -189,22 +215,80 @@ class ComicTranslatorGUI:
         else:
             messagebox.showwarning("警告", "輸出資料夾不存在！")
 
-    def parse_name_mapping(self):
-        """解析人名對照表"""
-        name_mapping = {}
-        text = self.name_mapping_text.get('1.0', tk.END)
+    def load_translation_config(self):
+        """載入翻譯配置到 GUI"""
+        config_file = Path("translation_config.txt")
+        if config_file.exists():
+            try:
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
 
-        for line in text.split('\n'):
-            line = line.strip()
-            if line and not line.startswith('#'):
-                if '=' in line:
-                    try:
-                        original, translation = line.split('=', 1)
-                        name_mapping[original.strip()] = translation.strip()
-                    except:
-                        pass
+                    # 分割三個區塊
+                    global_section = ""
+                    global_prompt_section = ""
+                    specific_section = ""
 
-        return name_mapping
+                    if "[全域設定]" in content:
+                        parts = content.split("[全域 Prompt]")
+                        global_section = parts[0].replace("[全域設定]", "").strip()
+
+                        if len(parts) > 1:
+                            remaining = parts[1]
+                            if "[特定圖片]" in remaining:
+                                prompt_parts = remaining.split("[特定圖片]")
+                                global_prompt_section = prompt_parts[0].strip()
+                                specific_section = prompt_parts[1].strip() if len(prompt_parts) > 1 else ""
+                            else:
+                                global_prompt_section = remaining.strip()
+                        elif "[特定圖片]" in parts[0]:
+                            temp_parts = parts[0].split("[特定圖片]")
+                            global_section = temp_parts[0].replace("[全域設定]", "").strip()
+                            specific_section = temp_parts[1].strip() if len(temp_parts) > 1 else ""
+
+                    # 載入到 GUI
+                    if global_section:
+                        self.global_config_text.delete('1.0', tk.END)
+                        self.global_config_text.insert('1.0', global_section)
+
+                    if global_prompt_section:
+                        self.global_prompt_text.delete('1.0', tk.END)
+                        self.global_prompt_text.insert('1.0', global_prompt_section)
+
+                    if specific_section:
+                        self.specific_config_text.delete('1.0', tk.END)
+                        self.specific_config_text.insert('1.0', specific_section)
+
+            except Exception as e:
+                logging.warning(f"無法載入 translation_config.txt: {e}")
+
+    def save_translation_config(self):
+        """儲存翻譯配置到檔案"""
+        try:
+            global_content = self.global_config_text.get('1.0', tk.END).strip()
+            global_prompt_content = self.global_prompt_text.get('1.0', tk.END).strip()
+            specific_content = self.specific_config_text.get('1.0', tk.END).strip()
+
+            with open("translation_config.txt", 'w', encoding='utf-8') as f:
+                f.write("[全域設定]\n")
+                f.write("# 說明：這裡的人名對照會套用到「所有圖片」\n")
+                f.write("# 格式：原文=中文（一行一個）\n")
+                if global_content:
+                    f.write(global_content)
+                f.write("\n\n[全域 Prompt]\n")
+                f.write("# 說明：套用到「所有圖片」的額外翻譯指示\n")
+                if global_prompt_content:
+                    f.write(global_prompt_content)
+                f.write("\n\n[特定圖片]\n")
+                f.write("# 說明：針對「個別圖片」設定額外的翻譯要求\n")
+                f.write("# 格式：檔名=額外要求（一行一個）\n")
+                if specific_content:
+                    f.write(specific_content)
+                f.write("\n")
+
+            logging.info("已儲存翻譯配置")
+
+        except Exception as e:
+            logging.error(f"無法儲存 translation_config.txt: {e}")
 
     def get_extra_prompt(self):
         """取得額外提示詞（已移除此功能）"""
@@ -265,11 +349,10 @@ class ComicTranslatorGUI:
             # 設定環境變數
             os.environ["GEMINI_API_KEY"] = self.api_key_var.get()
 
-            # 取得人名對照和額外提示
-            name_mapping = self.parse_name_mapping()
-            extra_prompt = self.get_extra_prompt()
+            # 儲存翻譯配置到檔案
+            self.save_translation_config()
 
-            # 初始化 AI 引擎
+            # 初始化 AI 引擎（會自動讀取 translation_config.txt）
             logging.info("正在初始化 AI 引擎...")
             ai_engine = AIEngine()
 
@@ -310,12 +393,10 @@ class ComicTranslatorGUI:
                 logging.info(f"[{i+1}/{total}] 正在處理: {input_path}")
 
                 try:
-                    # 處理圖片
+                    # 處理圖片（name_mapping 和 extra_prompt 都從配置檔讀取，不需要參數）
                     success = ai_engine.process_image(
                         input_path,
-                        output_path,
-                        name_mapping=name_mapping,
-                        extra_prompt=extra_prompt
+                        output_path
                     )
 
                     if success:
