@@ -19,7 +19,7 @@ from ..schemas.translation import (
 from ..services.translation_service import translation_service
 
 
-router = APIRouter(prefix="/api/translation", tags=["translation"])
+router = APIRouter(prefix="/api", tags=["translation"])
 logger = logging.getLogger(__name__)
 
 
@@ -123,7 +123,7 @@ async def translate_image(
             return TranslationResponse(
                 success=True,
                 filename=file.filename,
-                output_url=f"/api/translation/outputs/{output_filename}"
+                output_url=f"/api/outputs/{output_filename}"
             )
         else:
             return TranslationResponse(

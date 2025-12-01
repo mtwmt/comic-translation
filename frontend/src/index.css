@@ -1,0 +1,24 @@
+/* TailwindCSS 4.0 - 使用新的 @import 語法 */
+@import "tailwindcss";
+
+/* DaisyUI 5.x - 直接在 CSS 中引入 plugin */
+@plugin "daisyui" {
+  themes: light --default, dark --prefersdark;
+}
+
+/* 自訂設計 tokens (使用 @theme 指令) */
+@theme {
+  /* 可以在這裡自訂顏色、字體等 */
+}
+
+/* 全域樣式 */
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}

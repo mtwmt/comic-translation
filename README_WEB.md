@@ -27,30 +27,54 @@
 
 ```
 comic-translation/
-├── backend/                    # 後端 API (FastAPI)
+├── backend/                   # 後端 API (FastAPI)
 │   ├── api/
-│   │   ├── core/              # 核心配置
-│   │   ├── schemas/           # Pydantic Schema
-│   │   ├── services/          # 業務邏輯層
-│   │   ├── routers/           # API 路由
-│   │   └── main.py            # 應用程式進入點
+│   │   ├── core/             # 核心配置
+│   │   ├── schemas/          # Pydantic Schema
+│   │   ├── services/         # 業務邏輯
+│   │   ├── routers/          # API 路由
+│   │   └── main.py
 │   └── requirements.txt
 │
-├── frontend/             # 前端應用 (React 19)
+├── frontend/                  # 前端應用 (React 19 + TypeScript)
 │   ├── src/
-│   │   ├── api/               # API 整合 (Fetch API)
-│   │   ├── components/        # 共用元件
-│   │   │   ├── ui/           # UI 基礎元件
-│   │   │   └── ImageUploader.tsx
-│   │   ├── pages/             # 頁面元件
-│   │   │   ├── HomePage.tsx   # 翻譯主頁
-│   │   │   └── SettingsPage.tsx # 設定頁
-│   │   ├── store/             # 狀態管理 (Zustand)
-│   │   ├── types/             # TypeScript 定義
-│   │   └── App.tsx
+│   │   ├── pages/            # 頁面模組 (Colocation 架構)
+│   │   │   ├── HomePage/
+│   │   │   │   ├── HomePage.tsx
+│   │   │   │   ├── image-upload/
+│   │   │   │   │   ├── ImageUploader.tsx
+│   │   │   │   │   ├── useImageUpload.ts
+│   │   │   │   │   ├── upload.types.ts
+│   │   │   │   │   └── index.ts
+│   │   │   │   ├── translation/
+│   │   │   │   │   ├── TranslationResult.tsx
+│   │   │   │   │   ├── useTranslation.ts
+│   │   │   │   │   ├── translationApi.ts
+│   │   │   │   │   ├── translation.types.ts
+│   │   │   │   │   └── index.ts
+│   │   │   │   └── index.ts
+│   │   │   └── SettingsPage/
+│   │   │       ├── SettingsPage.tsx
+│   │   │       ├── SettingsForm.tsx
+│   │   │       ├── useSettings.ts
+│   │   │       ├── settingsStore.ts
+│   │   │       ├── settings.types.ts
+│   │   │       └── index.ts
+│   │   ├── shared/
+│   │   │   ├── components/
+│   │   │   │   ├── ui/       # Button, Input, Card
+│   │   │   │   └── layout/   # MainLayout, Header
+│   │   │   ├── hooks/        # useToast
+│   │   │   ├── utils/        # validators, fileHelpers
+│   │   │   └── constants/    # config
+│   │   ├── api/              # API 客戶端
+│   │   ├── App.tsx
+│   │   └── main.tsx
+│   ├── .env.example
+│   ├── package.json
 │   └── vite.config.ts
 │
-└── src/                        # 原有的 Python 模組
+└── src/                       # 原有的 Python 模組
 ```
 
 ## 安裝與執行
@@ -128,6 +152,7 @@ npm run dev
 
 ### 前端
 
+- ✅ **Colocation 架構**（頁面相關代碼集中，易於維護）
 - ✅ React 19 最新特性（Actions, useActionState, useOptimistic）
 - ✅ Functional Components + Hooks
 - ✅ Form Actions 簡化表單處理
@@ -135,6 +160,8 @@ npm run dev
 - ✅ TailwindCSS + DaisyUI 現代化 UI
 - ✅ TypeScript 強型別開發
 - ✅ Vite 6 極速開發體驗
+- ✅ 錯誤處理機制（ErrorBoundary + Toast）
+- ✅ 模組化 API 客戶端（Axios）
 
 ## 開發注意事項
 
@@ -147,11 +174,35 @@ npm run dev
 
 ### 前端
 
+#### Colocation 架構原則
+
+- **就近放置**：相關的代碼放在同一個頁面資料夾內（Components + Hooks + Types + API）
+- **頁面自包含**：每個頁面包含該頁面專用的所有檔案
+- **共用資源分離**：只有真正多個頁面使用的才放 `shared/`
+- **模組匯出**：每個頁面使用 `index.ts` 統一匯出
+- **類似 Angular Module**：每個頁面資料夾就像一個 Angular Feature Module
+
+#### React 19 最佳實踐
+
 - 使用 React 19 Form Actions 處理表單
 - 優先使用 `useActionState` 而非手動管理 loading/error 狀態
 - 使用 `useOptimistic` 提供即時反饋
-- 狀態管理：Local State > Zustand > Context
+- 狀態管理優先級：**Local State > Zustand > Context**
+
+#### 代碼組織
+
+- **元件與 Hook 共置**：相關的 Hook 放在同一個頁面資料夾內
+- **型別定義完整**：每個頁面定義自己專用的型別
+- **API 層封裝**：統一的錯誤處理和請求配置
 - 樣式優先使用 Tailwind Utility Classes
+- **Colocation 原則**：把一起改變的東西放在一起
+
+#### 檔案命名規範
+
+- 元件：`PascalCase.tsx` (如 `ImageUploader.tsx`)
+- Hooks：`camelCase.ts` 且以 `use` 開頭 (如 `useImageUpload.ts`)
+- 型別：`camelCase.types.ts` (如 `upload.types.ts`)
+- API：`camelCase.ts` 且以 `Api` 結尾 (如 `translationApi.ts`)
 
 ## 生產部署
 
