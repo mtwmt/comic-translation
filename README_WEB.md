@@ -16,7 +16,7 @@
 - **TypeScript** - 型別安全
 - **TailwindCSS** - Utility-first CSS 框架
 - **DaisyUI** - UI 元件庫（高質感預設樣式）
-- **Zustand** - 輕量級全域狀態管理
+- **React Context API** - 內建全域狀態管理
 - **React 19 新特性**:
   - Actions - 用於表單提交和資料變更
   - useActionState - 自動處理表單狀態
@@ -38,9 +38,12 @@ comic-translation/
 │
 ├── frontend/                  # 前端應用 (React 19 + TypeScript)
 │   ├── src/
+│   │   ├── layouts/          # 全域佈局元件
+│   │   │   ├── MainLayout.tsx
+│   │   │   └── Header.tsx
 │   │   ├── pages/            # 頁面模組 (Colocation 架構)
-│   │   │   ├── HomePage/
-│   │   │   │   ├── HomePage.tsx
+│   │   │   ├── TranslationPage/      # 翻譯功能頁面
+│   │   │   │   ├── TranslationPage.tsx
 │   │   │   │   ├── image-upload/
 │   │   │   │   │   ├── ImageUploader.tsx
 │   │   │   │   │   ├── useImageUpload.ts
@@ -57,14 +60,13 @@ comic-translation/
 │   │   │       ├── SettingsPage.tsx
 │   │   │       ├── SettingsForm.tsx
 │   │   │       ├── useSettings.ts
-│   │   │       ├── settingsStore.ts
 │   │   │       ├── settings.types.ts
 │   │   │       └── index.ts
 │   │   ├── shared/
+│   │   │   ├── contexts/     # React Context (SettingsContext)
 │   │   │   ├── components/
-│   │   │   │   ├── ui/       # Button, Input, Card
-│   │   │   │   └── layout/   # MainLayout, Header
-│   │   │   ├── hooks/        # useToast
+│   │   │   │   └── ui/       # Button, Input, Card
+│   │   │   ├── hooks/        # useToast, useLocalStorage
 │   │   │   ├── utils/        # validators, fileHelpers
 │   │   │   └── constants/    # config
 │   │   ├── api/              # API 客戶端
@@ -156,7 +158,7 @@ npm run dev
 - ✅ React 19 最新特性（Actions, useActionState, useOptimistic）
 - ✅ Functional Components + Hooks
 - ✅ Form Actions 簡化表單處理
-- ✅ Zustand 全域狀態管理
+- ✅ React Context API 全域狀態管理（遵循官方最佳實踐）
 - ✅ TailwindCSS + DaisyUI 現代化 UI
 - ✅ TypeScript 強型別開發
 - ✅ Vite 6 極速開發體驗
@@ -187,7 +189,7 @@ npm run dev
 - 使用 React 19 Form Actions 處理表單
 - 優先使用 `useActionState` 而非手動管理 loading/error 狀態
 - 使用 `useOptimistic` 提供即時反饋
-- 狀態管理優先級：**Local State > Zustand > Context**
+- 狀態管理優先級：**Local State > Context API > 第三方庫**
 
 #### 代碼組織
 
