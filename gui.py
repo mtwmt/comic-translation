@@ -240,7 +240,7 @@ class ComicTranslatorGUI:
         logging.getLogger().setLevel(logging.INFO)
 
         # 版權資訊
-        copyright_label = ttk.Label(main_frame, text="© 2025 Mandy | v0.2-beta",
+        copyright_label = ttk.Label(main_frame, text="© 2025 Mandy | v0.3-beta",
                                    font=('Arial', 8), foreground="gray", anchor='center')
         copyright_label.grid(row=7, column=0, pady=(6, 0), sticky=(tk.W, tk.E))
 

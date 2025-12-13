@@ -28,6 +28,7 @@
 ### 方式二：Python 原始碼版本（開發者）
 
 **環境需求：**
+
 - Python 3.8 或以上版本
 - Google Gemini API Key
 
@@ -112,39 +113,49 @@ build.bat
 ## 🔧 常見問題
 
 ### Q1: GUI 程式無法開啟？
+
 **A:**
+
 - 確認已安裝 Python 和所有依賴套件
 - 或使用打包好的 `ComicTranslator.exe` 執行檔版本
 
 ### Q2: API 回傳錯誤？
+
 **A:** 可能原因：
+
 - API Key 無效或過期
 - 超出 API 使用額度
 - 網路連線問題
 
 ### Q3: 翻譯結果不理想？
+
 **A:** 可以嘗試：
+
 - 使用解析度較高的圖片
 - 確保原圖文字清晰可見
 - 使用「人名對照表」功能自訂角色名稱
 
 ### Q4: 如何打包成執行檔？
+
 **A:**
+
 - Windows: 執行 `build.bat`
 - 其他系統: 參考 `build.bat` 內容使用 PyInstaller
 
 ## 📝 授權
 
-© 2025 Mandy | v0.1-beta
+© 2025 Mandy | v0.3-beta
 
 本專案僅供學習和個人使用。
 
 ## 🤝 分享給朋友
 
 **執行檔版本：**
+
 - 分享 `ComicTranslator` 資料夾
 - 使用者無需安裝 Python
 
 **原始碼版本：**
+
 - 分享專案資料夾（不包含 `.env` 檔案）
 - 使用者需自行申請 Gemini API Key
