@@ -1,72 +1,51 @@
-# 環境變數檔案（包含 API Key 等敏感資訊）
+# Private settings and local data
 .env
 .env.local
 .env.*.local
+gui_config.txt
+input/
+output/
+models/
+translated/
+.comic-translator/
+offline-runs/
+# Downloaded by `offline.py prepare-models` (see assets/fonts/README.txt)
+assets/fonts/*.otf
 
-# Python 相關
+# Python environments and generated files
+.venv
+.venv-*/
+venv/
+env/
+ENV/
 __pycache__/
 *.py[cod]
-*$py.class
 *.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
-*.egg
-
-# PyInstaller 打包相關
-*.spec
+.pytest_cache/
+.cache/
+*.log
 build/
 dist/
+*.spec
 
-# 虛擬環境
-venv/
-ENV/
-env/
-.venv
-
-# IDE 相關
+# Editor and OS files
 .vscode/
 !.vscode/settings.json
 .idea/
 *.swp
 *.swo
 *~
-
-# 作業系統相關
 .DS_Store
 Thumbs.db
 
-# 輸出檔案（處理後的圖片）
-input/
-output/
-*.log
+# Tool caches and local assistant settings
+.ruff_cache/
+.mypy_cache/
+.claude/settings.local.json
+*.bak
 
-# GUI 設定檔（包含使用者個人路徑）
-gui_config.txt
-
-# Node.js / Angular
-node_modules/
-dist/
-tmp/
-out-tsc/
-bazel-out/
-test-files/
-.angular/
-.cache/
-.browserslistrc
-.editorconfig
-.npmrc
-*.log
-package-lock.json
+# Synology Drive
+@eaDir/
+.SynologyWorkingDirectory/
+#recycle/

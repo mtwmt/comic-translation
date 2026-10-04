@@ -1,4 +1,14 @@
-google-genai
-Pillow
-python-dotenv
-google-cloud-aiplatform
+# Python 3.11; local vision/layout with official AGY text translation.
+Pillow==12.3.0
+numpy==2.4.6
+opencv-contrib-python==4.10.0.84
+paddleocr==3.3.3
+paddlepaddle==3.3.1
+paddlex==3.3.13
+manga-ocr==0.1.14
+torch==2.14.0
+transformers==4.57.6
+huggingface-hub==0.36.2
+opencc-python-reimplemented==0.1.7
+tkinterdnd2==0.4.4.1
+jieba==0.42.1
