@@ -6,6 +6,7 @@ from pathlib import Path
 from tkinter import filedialog
 
 from src.offline.batch import discover
+from src.platforms import current as platform_support
 
 STATE_LABELS = {"waiting": "等待處理", "running": "等待繼續", "success": "已輸出", "partial": "已輸出 · 待確認",
                 "failed": "失敗", "stopped": "已暫停 · 可繼續"}
@@ -131,13 +132,18 @@ class StagingMixin:
                 self.history[source] = (STATE_LABELS["stopped"], "stopped")
 
     def refresh_staged(self):
-        selected = self.source_list.selection()
+        # Rows change ids when a job starts or earlier rows are removed.
+        # Track checked images by source, not their transient row numbers.
+        previous_keys = getattr(self, "row_keys", {})
+        selected = platform_support.capture_selection(self.source_list.selection(), previous_keys)
         position = self.source_list.yview()[0]
         self.source_list.delete(*self.source_list.get_children())
+        self.row_keys = {}
         pending_sources = set()
         for index, (kind, path, retry) in enumerate(self.staged):
             label = "等待重試批次" if retry else "等待繼續批次" if kind == "resume" else "等待處理"
             self.source_list.insert("", "end", iid=str(index), values=("☐", path.name, label))
+            self.row_keys[str(index)] = ("image" if kind == "new" else kind, str(path.resolve()))
             if kind == "new":
                 pending_sources.add(str(path))
         self.history_ids = {}
@@ -146,8 +152,9 @@ class StagingMixin:
                 continue
             iid = f"history-{index}"
             self.history_ids[iid] = source
+            self.row_keys[iid] = ("image", str(Path(source).resolve()))
             self.source_list.insert("", "end", iid=iid, values=("☐", Path(source).name, label), tags=(state,))
-        self.source_list.selection_set([item for item in selected if self.source_list.exists(item)])
+        self.source_list.selection_set(platform_support.restore_selection(selected, self.row_keys))
         self.source_list.yview_moveto(position)
         if self.source_list.get_children():
             self.drop.place_forget()

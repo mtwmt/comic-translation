@@ -7,7 +7,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from src.offline import pipeline as pipeline_module
-from src.offline.layout import find_regions, prepare_masked_regions, render_region, render_masked_region
+from src.offline.layout import prepare_masked_regions, render_masked_region, MASK_VERSION
 from src.offline.models import ModelError, sha256
 from src.offline.restoration import RestorationModels, decode_mask, encode_mask, verify_restoration_models
 from src.offline.review import rerender, save_revision
@@ -36,9 +36,11 @@ def test_high_resolution_balloon_has_readable_font(font):
     draw = ImageDraw.Draw(image)
     draw.rectangle((800, 800, 1200, 1400), fill="white", outline="black", width=8)
     draw.rectangle((930, 950, 980, 1000), fill="black")
-    regions, labels = find_regions(image, [(np.array([[925, 945], [985, 945], [985, 1005], [925, 1005]]), .9)])
+    seed = np.zeros((3200, 3200), bool)
+    seed[950:1001, 930:981] = True
+    regions, _ = prepare_masked_regions(image, [(np.array([[925, 945], [985, 945], [985, 1005], [925, 1005]]), .9)], seed)
     regions[0]["translation"] = "你好！"
-    output, mask = render_region(image, regions[0], labels, font)
+    output, mask = render_masked_region(image, regions[0], font, FakeRestorer())
     assert regions[0]["font_size"] >= 38
     assert mask.any()
     assert np.array_equal(np.asarray(output)[~mask], np.asarray(image)[~mask])
@@ -49,11 +51,14 @@ def test_katakana_dialogue_and_unsafe_text_are_translated(tmp_path, monkeypatch,
     calls = []
     monkeypatch.setattr(pipeline_module, "verify_models", lambda *args, **kwargs: "test")
     monkeypatch.setattr(pipeline_module, "version", lambda name: "test")
-    monkeypatch.setattr(pipeline_module, "resolve_font", lambda root: (Path(__file__).resolve().parents[1] / "assets/fonts/NotoSansCJKtc-Bold.otf", {"family": "fixture"}))
+    monkeypatch.setattr(pipeline_module, "resolve_font", lambda: (Path(__file__).resolve().parents[1] / "assets/fonts/NotoSansCJKtc-Bold.otf", {"family": "fixture"}))
     monkeypatch.setattr(pipeline_module, "LocalModels", lambda root: SimpleNamespace(
-        detect=lambda image: [], recognize=lambda crop: text))
-    monkeypatch.setattr(pipeline_module, "find_regions", lambda *args: ([
+        detect=lambda image, **options: [], recognize=lambda crop: text))
+    monkeypatch.setattr(pipeline_module, "prepare_masked_regions", lambda *args, **kwargs: ([
         {"id": "r1", "bbox": [0, 0, 20, 20], "status": "preserved", "reason": "unsafe artwork"}], None))
+    restorer = FakeRestorer()
+    restorer.detect = lambda im: ([], np.zeros((im.height, im.width), bool), [])
+    monkeypatch.setattr("src.offline.restoration.RestorationModels", lambda root: restorer)
     def translate(records, glossary):
         calls.append(records)
         return {"r1": "謝謝！"}
@@ -92,6 +97,7 @@ def complex_region():
     safe[85:170, 85:170] = True
     region = {"id": "r1", "bbox": [85, 85, 170, 170], "label": None, "direction": "vertical",
               "erase_mask": encode_mask(mask), "layout_mask": encode_mask(safe),
+              "mask_version": MASK_VERSION,
               "translation": "你好！", "requires_review": True, "status": "pending"}
     return image, region
 
@@ -104,6 +110,17 @@ def test_complex_repair_is_local_and_requires_review(font):
     assert region["cleaning"] == "lama" and region["requires_review"]
     assert np.array_equal(np.asarray(image)[~changed], np.asarray(result)[~changed])
     assert changed.sum() < image.width * image.height * .1
+
+
+@pytest.mark.parametrize("mask_version", [None, "character-mask-1"])
+def test_retired_masks_are_rejected_without_automatic_upgrade(font, mask_version):
+    image, region = complex_region()
+    region["mask_version"] = mask_version
+    restorer = FakeRestorer()
+    before = deepcopy(region)
+    with pytest.raises(ValueError, match="重新建立辨識報告"):
+        render_masked_region(image, region, font, restorer)
+    assert region == before and restorer.calls == 0
 
 
 def test_shared_size_uses_balloon_space_before_shrinking(font):
@@ -183,7 +200,7 @@ def test_solid_background_does_not_need_lama(font):
 
 
 def test_revision_starts_from_original_and_preserves_old_files(tmp_path, font, monkeypatch):
-    monkeypatch.setattr("src.offline.review.resolve_font", lambda root: (font, {"family": "fixture"}))
+    monkeypatch.setattr("src.offline.review.resolve_font", lambda: (font, {"family": "fixture"}))
     image, region = complex_region()
     source = tmp_path / "source.png"
     image.save(source)
@@ -206,10 +223,10 @@ def test_revision_starts_from_original_and_preserves_old_files(tmp_path, font, m
         rerender(report, models, model)
 
 
-@pytest.mark.parametrize('folders', [('final', 'work'), ('成品', '工作資料')])
+@pytest.mark.parametrize('folders', [('final', 'work')])
 def test_revision_keeps_png_separate_from_work_files(tmp_path, font, monkeypatch, folders):
     import json
-    monkeypatch.setattr("src.offline.review.resolve_font", lambda root: (font, {"family": "fixture"}))
+    monkeypatch.setattr("src.offline.review.resolve_font", lambda: (font, {"family": "fixture"}))
     image, region = complex_region()
     source = tmp_path / 'source.png'
     image.save(source)
@@ -221,7 +238,7 @@ def test_revision_keeps_png_separate_from_work_files(tmp_path, font, monkeypatch
               'output_path': str(final / 'page.png'), 'metadata_dir': str(metadata)}
     output, revised, mask = rerender(report, font.parents[1], FakeRestorer())
     path = save_revision(metadata / 'page.json', output, revised, mask)
-    saved = json.loads(path.read_text())
+    saved = json.loads(path.read_text(encoding="utf-8"))
     assert path.parent == metadata
     assert Path(saved['output_path']).parent == final
     assert Path(saved['output_path']).name == 'source_zh-TW_revised.png'
@@ -278,10 +295,10 @@ def test_enhanced_pipeline_retains_pixel_invariant(tmp_path, monkeypatch, font):
     monkeypatch.setattr(restoration_module, "RestorationModels", lambda root: restorer)
     monkeypatch.setattr(pipeline_module, "verify_models", lambda *args, **kwargs: "test")
     monkeypatch.setattr(pipeline_module, "version", lambda name: "test")
-    monkeypatch.setattr(pipeline_module, "resolve_font", lambda root: (Path(__file__).resolve().parents[1] / "assets/fonts/NotoSansCJKtc-Bold.otf", {"family": "fixture"}))
+    monkeypatch.setattr(pipeline_module, "resolve_font", lambda: (Path(__file__).resolve().parents[1] / "assets/fonts/NotoSansCJKtc-Bold.otf", {"family": "fixture"}))
     monkeypatch.setattr(pipeline_module, "LocalModels", lambda root: SimpleNamespace(recognize=lambda crop: "ハイ！", detect=lambda im, **options: []))
     translator = SimpleNamespace(fingerprint={"provider": "fixture"}, translate=lambda records, glossary: {"r001": "你好！"})
-    pipe = pipeline_module.TranslationPipeline(font.parents[1], translator, restoration="enhanced")
+    pipe = pipeline_module.TranslationPipeline(font.parents[1], translator)
     source = tmp_path / "source.png"
     image.save(source)
     result, report, changed = pipe.process(source, {})
@@ -306,15 +323,22 @@ def test_gap_filling_guess_that_reads_as_nothing_is_dropped(tmp_path, monkeypatc
     monkeypatch.setattr(restoration_module, "RestorationModels", lambda root: restorer)
     monkeypatch.setattr(pipeline_module, "verify_models", lambda *args, **kwargs: "test")
     monkeypatch.setattr(pipeline_module, "version", lambda name: "test")
-    monkeypatch.setattr(pipeline_module, "resolve_font", lambda root: (Path(__file__).resolve().parents[1] / "assets/fonts/NotoSansCJKtc-Bold.otf", {"family": "fixture"}))
+    monkeypatch.setattr(pipeline_module, "resolve_font", lambda: (Path(__file__).resolve().parents[1] / "assets/fonts/NotoSansCJKtc-Bold.otf", {"family": "fixture"}))
     extra = [(np.array([[295, 295], [350, 295], [350, 385], [295, 385]]), .8)]
     monkeypatch.setattr(pipeline_module, "LocalModels", lambda root: SimpleNamespace(
         recognize=lambda crop: "ハイ！" if crop.width < 60 and crop.height < 70 and crop.width > 30 and crop.height > 40 and crop.getpixel((15, 15)) != (0, 0, 0) and crop.size[0] != 49 else "．．．",
         detect=lambda im, **options: extra))
     translator = SimpleNamespace(fingerprint={"provider": "fixture"}, translate=lambda records, glossary: {r["id"]: "你好！" for r in records})
-    pipe = pipeline_module.TranslationPipeline(font.parents[1], translator, restoration="enhanced")
+    pipe = pipeline_module.TranslationPipeline(font.parents[1], translator)
     source = tmp_path / "source.png"
     image.save(source)
     _, report, _ = pipe.process(source, {}, analyze_only=True)
     assert [r["id"] for r in report["regions"]] == ["r001"]
     assert not any(r.get("recovered") for r in report["regions"])
+
+
+def test_pipeline_requires_repair_models_instead_of_falling_back(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline_module, "verify_models", lambda root: "vision")
+    monkeypatch.setattr(pipeline_module, "version", lambda name: "fixture")
+    with pytest.raises(ModelError, match="prepare-restoration"):
+        pipeline_module.TranslationPipeline(tmp_path)

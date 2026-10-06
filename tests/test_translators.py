@@ -65,3 +65,33 @@ def test_agy_models_are_parsed_from_cli_output(monkeypatch):
     from src.offline import agy_provider
     monkeypatch.setattr(agy_provider, "run_cli", lambda *a, **k: "Fetching available models...\ngemini-x-low\tGemini X (Low)\n")
     assert agy_provider.list_models("/fake/agy") == [("gemini-x-low", "Gemini X (Low)")]
+
+
+@pytest.mark.parametrize('provider,model', [('codex', 'gpt-6.1-sol'), ('claude', 'claude-opus-5-5')])
+def test_generation_options_fingerprint_and_saved_model_preferences(tmp_path, monkeypatch, provider, model):
+    executable = tmp_path / 'cli'
+    executable.write_text('fixture')
+    monkeypatch.setattr(cli_common.shutil, 'which', lambda _: str(executable))
+    base = translators.create_translator(provider, model).fingerprint
+    off = translators.create_translator(provider, model, options={'fast': False})
+    assert off.fingerprint == base
+    options = {'effort': 'xhigh', 'fast': True}
+    selected = translators.create_translator(provider, model, options=options)
+    assert selected.fingerprint == {**base, **options}
+    settings = tmp_path / 'settings.json'
+    settings.write_text(json.dumps({'translator_provider': provider, 'translator_models': {provider: model},
+        'translator_options': {provider: {model: options}},
+        'translator_model_capabilities': {provider: {model: {'efforts': ['low', 'xhigh'], 'fast': True}}}}))
+    from src.platforms import current
+    monkeypatch.setattr(current, 'TRANSLATION_OPTIONS', True)
+    assert translators.translator_from_settings(settings).fingerprint == selected.fingerprint
+    monkeypatch.setattr(current, 'TRANSLATION_OPTIONS', False)
+    assert translators.translator_from_settings(settings).fingerprint == base
+
+
+def test_corrupted_or_unsupported_saved_options_cannot_enable_fast():
+    from src.offline.generation_options import configured_options, effective_options
+    preferences = {'translator_options': {'codex': {'model': {'effort': [], 'fast': 'yes'}}}}
+    assert configured_options(preferences, 'codex', 'model') == {'fast': False}
+    preferences['translator_options']['codex']['model'] = {'effort': 'xhigh', 'fast': True}
+    assert effective_options(preferences, 'codex', 'model') == {'effort': None, 'fast': False}

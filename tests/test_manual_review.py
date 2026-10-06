@@ -74,7 +74,7 @@ def test_manual_region_render_save_reload_preserves_pixels_outside_box(tmp_path,
     region = manual_region(image, [100,100,210,230], [], {})
     region.update(original='おまたせ！', translation='久等了！')
     font = Path(__file__).resolve().parents[1] / 'assets/fonts/NotoSansCJKtc-Bold.otf'
-    monkeypatch.setattr('src.offline.review.resolve_font', lambda _: (font, {'family': 'test'}))
+    monkeypatch.setattr('src.offline.review.resolve_font', lambda: (font, {'family': 'test'}))
     report = {'source': str(source), 'source_hash': sha256(source), 'image_size': list(image.size),
               'fingerprint': {'restoration': 'test'}, 'regions': [region], 'glossary': {}}
     restorer = SimpleNamespace(fingerprint='test', inpaint=lambda im, mask: Image.new('RGB', im.size, 'white'))
@@ -88,7 +88,7 @@ def test_manual_region_render_save_reload_preserves_pixels_outside_box(tmp_path,
     assert np.array_equal(np.asarray(image)[~mask], np.asarray(rendered)[~mask])
     path = save_revision(tmp_path/'report.json', rendered, updated, changed)
     import json
-    saved = json.loads(path.read_text())
+    saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved['regions'][0]['manual']
     assert load_source(saved).size == image.size
     assert Path(saved['output_path']).exists()

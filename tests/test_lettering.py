@@ -58,7 +58,7 @@ def test_missing_system_and_bundled_fonts_fail_clearly(tmp_path, monkeypatch):
     monkeypatch.setattr(fonts, 'system_font_candidates', lambda: [])
     monkeypatch.setattr(fonts.Path, 'is_file', lambda path: False)
     with pytest.raises(ModelError, match='Noto 繁中粗體缺失'):
-        fonts.resolve_font(tmp_path)
+        fonts.resolve_font()
 
 
 def test_font_collection_uses_traditional_chinese_semibold_face(tmp_path, monkeypatch):
@@ -71,7 +71,7 @@ def test_font_collection_uses_traditional_chinese_semibold_face(tmp_path, monkey
         return SimpleNamespace(getname=lambda: faces[index])
     monkeypatch.setattr(fonts.ImageFont, 'truetype', fake_font)
     monkeypatch.setattr(fonts, 'system_font_candidates', lambda: [(path, 'PingFang TC', 'Semibold')])
-    selected, details = fonts.resolve_font(tmp_path)
+    selected, details = fonts.resolve_font()
     assert details['index'] == 2
     assert fonts.load_font(fonts.FontFace(selected, details['index']), 36).getname() == ('PingFang TC', 'Semibold')
 
@@ -83,14 +83,14 @@ def test_windows_uses_jhenghei_bold(tmp_path, monkeypatch):
     font.parent.mkdir(parents=True)
     font.write_bytes(b'Windows font fixture')
     monkeypatch.setattr(fonts.ImageFont, 'truetype', lambda *args, **kwargs: SimpleNamespace(getname=lambda: ('Microsoft JhengHei', 'Bold')))
-    selected, details = fonts.resolve_font(tmp_path)
+    selected, details = fonts.resolve_font()
     assert selected == font
     assert details['family'] == 'Microsoft JhengHei' and details['style'] == 'Bold'
 
 
 def test_bundled_fallback_is_real_traditional_chinese_bold(tmp_path, monkeypatch):
     monkeypatch.setattr(fonts, 'system_font_candidates', lambda: [])
-    path, details = fonts.resolve_font(tmp_path)
+    path, details = fonts.resolve_font()
     assert path.parent == fonts.BUNDLED_FONTS
     assert details['family'] == 'Noto Sans CJK TC' and details['style'] == 'Bold'
     assert fonts.load_font(fonts.FontFace(path, details['index']), 40).getmask('繁體漫畫！？').getbbox()
@@ -117,7 +117,7 @@ def test_name_title_and_glossary_are_never_split():
 
 def test_manual_newlines_are_kept_and_all_characters_survive():
     from src.offline.layout import glyph_layer
-    font, details = fonts.resolve_font(Path(__file__).resolve().parents[1] / 'models')
+    font, details = fonts.resolve_font()
     info = {}
     text = '你打算\n拿金幣\n做什麼？'
     layer = glyph_layer((300, 300), text, (10, 10, 290, 290),
@@ -186,7 +186,7 @@ def test_missing_hearts_use_bundled_glyph_without_changing_chinese(monkeypatch, 
 @pytest.mark.parametrize('vertical', [False, True])
 def test_platform_font_renders_heart_at_end_of_dialogue(vertical):
     from src.offline.layout import glyph_layer
-    path, details = fonts.resolve_font(Path('models'))
+    path, details = fonts.resolve_font()
     face = fonts.FontFace(path, details.get('index', 0))
     info = {}
     # One row/column, with the heart in the last cell.

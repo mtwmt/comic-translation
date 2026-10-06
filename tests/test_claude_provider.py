@@ -57,3 +57,38 @@ def test_claude_failure_or_tool_use_is_rejected():
     with pytest.raises(ValueError, match="工具"):
         claude(run_with({"subtype": "success", "is_error": False, "structured_output": {"a": "好"},
                          "permission_denials": [{"tool": "Bash"}]})).translate(ROWS, {})
+
+
+@pytest.mark.parametrize('fast', [False, True])
+def test_claude_sends_effort_and_fast_only_when_enabled(fast):
+    calls = []
+    def run(args, timeout, input_text=None):
+        calls.append(args)
+        if args[0] == 'auth':
+            return json.dumps({'loggedIn': True, 'authMethod': 'claude.ai', 'apiProvider': 'firstParty'})
+        return json.dumps({'subtype': 'success', 'structured_output': {'a': '久等了！'}})
+    translator = claude(run)
+    translator.model = 'claude-opus-5-5'
+    translator.options = {'effort': 'high', 'fast': fast}
+    assert translator.translate(ROWS, {}) == {'a': '久等了！'}
+    args = calls[-1]
+    assert args[args.index('--effort') + 1] == 'high'
+    if fast:
+        assert json.loads(args[args.index('--settings') + 1]) == {'fastMode': True}
+    else:
+        assert '--settings' not in args
+    assert translator.last_metadata['fast'] is fast
+
+
+def test_claude_effort_overrides_environment_without_global_mutation(monkeypatch):
+    from src.offline import claude_provider
+    captured = {}
+    monkeypatch.setenv('CLAUDE_CODE_EFFORT_LEVEL', 'max')
+    monkeypatch.setattr(claude_provider, 'run_cli', lambda *args, **kwargs: captured.update(kwargs))
+    translator = claude(lambda *args: None)
+    translator.executable = '/fake/claude'
+    translator.options = {'effort': 'low', 'fast': False}
+    ClaudeTranslator._run(translator, ['-p'], 30)
+    assert captured['env_overrides'] == {'CLAUDE_CODE_EFFORT_LEVEL': 'low'}
+    import os
+    assert os.environ['CLAUDE_CODE_EFFORT_LEVEL'] == 'max'

@@ -5,14 +5,45 @@ import os
 import subprocess
 import sys
 import threading
+import tkinter as tk
 import webbrowser
 from pathlib import Path
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 
+from src.gui.help_text import USAGE_SECTIONS
 from src.gui.worker import ROOT
+from src.runtime_paths import offline_command
+from src.version import __version__
 
 
 class ActionsMixin:
+    def show_about(self):
+        messagebox.showinfo("關於漫畫翻譯器",
+                            f"漫畫翻譯器 {__version__}\n\n"
+                            "本機 OCR、清字與排版，搭配雲端文字翻譯。\n\n"
+                            "© 2026 Mandy\n"
+                            "僅供學習和個人使用。", parent=self.root)
+
+    def show_usage(self):
+        if self.usage_window is not None and self.usage_window.winfo_exists():
+            self.usage_window.deiconify()
+            self.usage_window.lift()
+            return
+        self.usage_window = window = tk.Toplevel(self.root)
+        window.title("漫畫翻譯器 · 使用說明")
+        window.geometry("640x560")
+        text = tk.Text(window, wrap="word", relief="flat", padx=14, pady=10, font="TkTextFont",
+                       spacing1=2, spacing3=2)
+        scroll = ttk.Scrollbar(window, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        text.pack(side="left", fill="both", expand=True)
+        text.tag_configure("heading", font=self.heading_font, spacing1=10, spacing3=4)
+        for heading, body in USAGE_SECTIONS:
+            text.insert("end", heading + "\n", "heading")
+            text.insert("end", body + "\n")
+        text.configure(state="disabled")
+
     def toggle_log(self):
         if self.show_log.get():
             self.log_window.deiconify()
@@ -62,12 +93,12 @@ class ActionsMixin:
             environment.pop("HF_HUB_OFFLINE", None)
             environment.pop("TRANSFORMERS_OFFLINE", None)
             for command in ("prepare-models", "prepare-restoration"):
-                subprocess.run([sys.executable, str(ROOT / "offline.py"), command],
-                               env=environment, check=True)
+                subprocess.run(offline_command(command), env=environment, check=True,
+                               **({"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}))
             self.events.put({"models_ready": True})
             from src.offline.fonts import resolve_font
             try:
-                resolve_font(ROOT / "models")
+                resolve_font()
                 ready = "翻譯所需檔案已就緒，可以加入圖片。"
             except RuntimeError as error:
                 ready = "所需檔案下載完成；" + str(error)

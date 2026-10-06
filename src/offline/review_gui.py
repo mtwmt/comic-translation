@@ -16,12 +16,21 @@ from PIL import Image, ImageTk
 from .restoration import decode_mask, encode_mask
 from .review import load_source, rerender, save_revision
 from .manual_review import manual_region, ocr_candidates, recognize_manual_region, resize_manual_region, strengthen_white_cleaning, translate_region
+from src.platforms import current as platform_support
 
 
-def require_rendered_translations(report):
+def require_rendered_translations(report, previous=None):
     """Never replace an edited preview/export with a silent source fallback."""
     failed = [r for r in report["regions"] if r.get("enabled", True)
               and r.get("translation", "").strip() and r.get("status") == "preserved"]
+    if platform_support.DELETE_DETECTED_REGIONS and previous is not None:
+        old = {r["id"]: r for r in previous["regions"]}
+        editable = ("original", "translation", "bbox", "erase_mask", "layout_mask",
+                    "enabled", "direction", "font_size_override", "cleaning_mode")
+        defaults = {"enabled": True, "font_size_override": 0}
+        failed = [r for r in failed if r["id"] not in old or old[r["id"]].get("status") != "preserved"
+                  or any(r.get(key, defaults.get(key)) != old[r["id"]].get(key, defaults.get(key))
+                         for key in editable)]
     if failed:
         details = "；".join(f"{r['id']}：{r.get('reason', '無法完成排版')}" for r in failed)
         raise ValueError("保留上次預覽，尚未套用此次調整。" + details)
@@ -31,6 +40,7 @@ class ReviewWindow:
     def __init__(self, root, report_path, models):
         self.root, self.report_path, self.models = root, Path(report_path), Path(models)
         self.report = json.loads(self.report_path.read_text(encoding="utf-8"))
+        self.rendered_report = deepcopy(self.report)
         self.original = load_source(self.report)
         self.result = self.original.copy()
         result_path = Path(self.report.get("output_path", self.report_path.with_suffix(".png")))
@@ -64,12 +74,33 @@ class ReviewWindow:
         self.font_size = tk.StringVar(value="0")
         self.status = tk.StringVar(value="修改後自動更新本機預覽；按「儲存成品」才會輸出檔案。")
         root.title(f"漫畫翻譯｜{Path(self.report['source']).name}｜修訂")
-        root.geometry("1200x850")
+        scale = platform_support.window_scale(root)
+        height = 920 if platform_support.SCROLL_REVIEW_REGIONS else 850
+        root.geometry(f"{min(round(1200 * scale), root.winfo_screenwidth() - 40)}x"
+                      f"{min(round(height * scale), root.winfo_screenheight() - 80)}")
         body = ttk.Frame(root, padding=10)
         body.pack(fill="both", expand=True)
-        left, right = ttk.Frame(body), ttk.Frame(body, width=340)
+        left = ttk.Frame(body)
         left.pack(side="left", fill="both", expand=True)
-        right.pack(side="right", fill="y", padx=(12, 0))
+        # The controls scroll only when the screen is shorter than the column.
+        side = tk.Canvas(body, highlightthickness=0, background=ttk.Style(root).lookup("TFrame", "background"))
+        side.pack(side="right", fill="y", padx=(12, 0))
+        side_scroll = ttk.Scrollbar(body, orient="vertical", command=side.yview)
+        side.configure(yscrollcommand=side_scroll.set)
+        right = ttk.Frame(side)
+        side.create_window(0, 0, window=right, anchor="nw")
+
+        def fit_side(event=None):
+            width, needed = right.winfo_reqwidth(), right.winfo_reqheight()
+            side.configure(width=width, scrollregion=(0, 0, width, needed))
+            if needed > side.winfo_height() > 1:
+                side_scroll.pack(side="right", fill="y", before=side)
+            else:
+                side_scroll.pack_forget()
+                side.yview_moveto(0)
+
+        right.bind("<Configure>", fit_side)
+        side.bind("<Configure>", fit_side)
         modes = ttk.Frame(left)
         modes.pack(fill="x")
         for text, value in [("原圖", "original"), ("譯圖", "result"), ("清字遮罩", "mask")]:
@@ -86,10 +117,20 @@ class ReviewWindow:
         self.canvas.bind("<Motion>", self.pointer_hover)
         self.canvas.bind("<Leave>", lambda event: self.canvas.delete("brush-cursor"))
         root.bind("<Escape>", lambda event: self.cancel_box())
-        self.regions = tk.Listbox(right, height=6, width=42, exportselection=False)
-        self.regions.pack(fill="x")
+        if platform_support.SCROLL_REVIEW_REGIONS:
+            region_list = ttk.Frame(right)
+            region_list.pack(fill="x")
+            self.regions = tk.Listbox(region_list, height=12, width=42, exportselection=False)
+            self.region_scrollbar = ttk.Scrollbar(region_list, orient="vertical", command=self.regions.yview)
+            self.region_scrollbar.pack(side="right", fill="y")
+            self.regions.configure(yscrollcommand=self.region_scrollbar.set)
+            self.regions.pack(side="left", fill="both", expand=True)
+        else:
+            self.regions = tk.Listbox(right, height=6, width=42, exportselection=False)
+            self.regions.pack(fill="x")
         self.regions.bind("<<ListboxSelect>>", self.select)
-        self.delete_button = ttk.Button(right, text="刪除手動區域", command=self.delete_manual)
+        self.delete_button = ttk.Button(right, text="刪除選取區域" if platform_support.DELETE_DETECTED_REGIONS else "刪除手動區域",
+                                       command=self.delete_region)
         self.delete_button.pack(anchor="e")
         ttk.Label(right, text="辨識原文（可更正）").pack(anchor="w", pady=(8, 0))
         self.source = tk.Text(right, height=3, width=38, wrap="word", undo=True)
@@ -118,13 +159,13 @@ class ReviewWindow:
         self.font_control = ttk.Spinbox(lettering, from_=0, to=512, increment=2, width=5,
                                        textvariable=self.font_size, validate="key", validatecommand=validate_size)
         self.font_control.pack(side="left")
-        self.font_hint = ttk.Label(right, text="0＝依原文字級，放不下才縮小。", wraplength=340)
+        self.font_hint = ttk.Label(right, text="0＝依原文字級，放不下才縮小。", wraplength=round(340 * scale))
         self.font_hint.pack(anchor="w")
         self.clean_button = ttk.Button(right, text="加強白底清字", command=self.strengthen_cleaning)
         self.clean_button.pack(fill="x", pady=4)
-        self.reason = ttk.Label(right, wraplength=310)
+        self.reason = ttk.Label(right, wraplength=round(310 * scale))
         self.reason.pack(fill="x", pady=5)
-        ttk.Label(right, text="檢視模式：拖曳框的四角或邊緣調整大小（偵測到的區域也可以）\n遮罩筆刷：僅在文字框附近生效", wraplength=310).pack(anchor="w", pady=(10, 0))
+        ttk.Label(right, text="檢視模式：拖曳框的四角或邊緣調整大小（偵測到的區域也可以）\n遮罩筆刷：僅在文字框附近生效", wraplength=round(310 * scale)).pack(anchor="w", pady=(10, 0))
         self.brush_buttons = []
         for text, value in [("檢視", "inspect"), ("加入清字範圍", "add"), ("排除清字範圍", "remove")]:
             button = ttk.Radiobutton(right, text=text, variable=self.brush, value=value,
@@ -144,8 +185,8 @@ class ReviewWindow:
         self.preview_button.pack(side="left", fill="x", expand=True)
         self.apply_button = ttk.Button(actions, text="儲存成品", command=self.apply)
         self.apply_button.pack(side="left", fill="x", expand=True, padx=(8, 0))
-        ttk.Label(right, text="局部補畫可能推測錯誤，請放大確認畫線。\n空白譯文或取消套用的區域會保留原圖。", wraplength=310).pack(anchor="w")
-        ttk.Label(root, textvariable=self.status, wraplength=1150, padding=10).pack(fill="x")
+        ttk.Label(right, text="局部補畫可能推測錯誤，請放大確認畫線。\n空白譯文或取消套用的區域會保留原圖。", wraplength=round(310 * scale)).pack(anchor="w")
+        ttk.Label(root, textvariable=self.status, wraplength=round(1150 * scale), padding=10).pack(fill="x")
         self.refresh_list()
         if self.report["regions"]:
             self.regions.selection_set(0)
@@ -210,7 +251,7 @@ class ReviewWindow:
         self.mask = decode_mask(r["erase_mask"], (self.original.height, self.original.width)) if "erase_mask" in r else None
         self.apply_button.configure(state="normal" if self.mask is not None else "disabled")
         self.translate_button.configure(state="normal")
-        self.delete_button.configure(state="normal" if r.get("manual") else "disabled")
+        self.delete_button.configure(state="normal" if self.can_delete(r) else "disabled")
         if self.mask is None:
             self.reason.configure(text="此舊報告沒有可編輯遮罩，請用新版清字模式重新處理。")
         self.source.edit_modified(False)
@@ -252,6 +293,7 @@ class ReviewWindow:
             return
         self.commit()
         snapshot, revision = deepcopy(self.report), self.edit_version
+        previous = deepcopy(self.rendered_report)
         self.preview_pending = False
         self.status.set("正在更新本機預覽…不輸出檔案，可繼續編輯。")
         def run():
@@ -260,7 +302,7 @@ class ReviewWindow:
                 if self.preview_restorer is None:
                     self.preview_restorer = RestorationModels(self.models)
                 im, report, mask = rerender(snapshot, self.models, self.preview_restorer)
-                require_rendered_translations(report)
+                require_rendered_translations(report, previous)
                 self.events.put({"kind": "preview", "version": revision, "image": im, "report": report})
             except Exception as error:
                 self.events.put({"kind": "preview", "version": revision, "error": str(error)})
@@ -278,6 +320,7 @@ class ReviewWindow:
                 self.reason.configure(text=event["error"])
             else:
                 self.result, self.report = event["image"], event["report"]
+                self.rendered_report = deepcopy(self.report)
                 # Update rendering metadata without replacing the editor text,
                 # cursor or undo history while the user is typing.
                 selected = self.regions.curselection()
@@ -507,20 +550,30 @@ class ReviewWindow:
         self.worker = threading.Thread(target=run, daemon=False)
         self.worker.start()
 
-    def delete_manual(self):
-        if self.busy or self.index is None or not self.report["regions"][self.index].get("manual"):
+    def can_delete(self, region):
+        return bool(region and (region.get("manual") or platform_support.DELETE_DETECTED_REGIONS))
+
+    def delete_region(self):
+        if self.busy or self.index is None or not self.can_delete(self.report["regions"][self.index]):
             return
-        self.report["regions"].pop(self.index)
+        self.cancel_box()
+        removed = self.report["regions"].pop(self.index)
+        if platform_support.DELETE_DETECTED_REGIONS:
+            self.report.setdefault("deleted_region_ids", []).append(removed["id"])
         self.index, self.mask = None, None
         self.refresh_list()
+        self.loading_fields = True
         self.source.delete("1.0", "end")
         self.translation.delete("1.0", "end")
+        self.source.edit_modified(False)
+        self.translation.edit_modified(False)
+        self.loading_fields = False
         if self.report["regions"]:
             self.regions.selection_set(0)
             self.select()
         self.set_busy(False)
         self.draw()
-        self.status.set("已移除手動區域，正在更新預覽；按「儲存成品」才會輸出。")
+        self.status.set("已移除選取區域，正在從原圖更新預覽；按「儲存成品」才會輸出。")
         self.changed(show_result=True)
 
     def strengthen_cleaning(self):
@@ -657,6 +710,7 @@ class ReviewWindow:
             self.root.after_cancel(self.preview_timer)
             self.preview_timer = None
         snapshot = deepcopy(self.report)
+        previous = deepcopy(self.rendered_report)
         self.set_busy(True)
         self.status.set("正在本機重新清字與排版；完成後另存修訂，不呼叫雲端翻譯。")
         def run():
@@ -665,7 +719,7 @@ class ReviewWindow:
                 if self.restorer is None:
                     self.restorer = RestorationModels(self.models)
                 im, report, mask = rerender(snapshot, self.models, self.restorer)
-                require_rendered_translations(report)
+                require_rendered_translations(report, previous)
                 path = save_revision(self.report_path, im, report, mask)
                 self.events.put((im, report, path))
             except Exception as error:
@@ -690,7 +744,7 @@ class ReviewWindow:
             self.direction_control.configure(state="readonly" if region else "disabled")
             self.translate_button.configure(state="normal" if region else "disabled")
             self.reread_button.configure(state="normal" if region else "disabled")
-            self.delete_button.configure(state="normal" if region.get("manual") else "disabled")
+            self.delete_button.configure(state="normal" if self.can_delete(region) else "disabled")
             self.clean_button.configure(state="normal" if region.get("manual") else "disabled")
             self.apply_button.configure(state="normal" if all("erase_mask" in r for r in self.report["regions"]) else "disabled")
 
@@ -740,6 +794,7 @@ class ReviewWindow:
                 self.changed(show_result=event["kind"] == "translation")
             else:
                 self.result, self.report, path = event
+                self.rendered_report = deepcopy(self.report)
                 self.saved_report_path = Path(path)
                 self.dirty = False
                 index, self.index = self.index, None

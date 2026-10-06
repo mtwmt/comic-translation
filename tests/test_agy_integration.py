@@ -47,7 +47,7 @@ def fake_vision(monkeypatch):
         def __init__(self, root):
             pass
 
-        def detect(self, image):
+        def detect(self, image, **options):
             calls["detect"] += 1
             return []
 
@@ -59,10 +59,17 @@ def fake_vision(monkeypatch):
             calls["local_translate"] += 1
             return {record["id"]: "本機譯文" for record in records}
 
-    def regions(image, detections):
+    class Restorer:
+        fingerprint = {"restoration": "fixture"}
+        def __init__(self, root):
+            pass
+        def detect(self, image):
+            return [], np.zeros((image.height, image.width), bool), []
+
+    def regions(image, detections, text_mask, line_boxes, refine=None):
         return [{"id": "r1", "status": "pending", "bbox": [2, 2, 8, 8]}], np.zeros((image.height, image.width))
 
-    def render(image, region, labels, font):
+    def render(image, region, font, restorer):
         output = image.copy()
         output.putpixel((3, 3), (0, 0, 0))
         mask = np.zeros((image.height, image.width), dtype=bool)
@@ -71,10 +78,11 @@ def fake_vision(monkeypatch):
 
     monkeypatch.setattr(pipeline_module, "verify_models", verify)
     monkeypatch.setattr(pipeline_module, "version", lambda name: "fake-1.0")
-    monkeypatch.setattr(pipeline_module, "resolve_font", lambda root: (Path("fixture.ttf"), {"family": "fixture"}))
+    monkeypatch.setattr(pipeline_module, "resolve_font", lambda: (Path("fixture.ttf"), {"family": "fixture"}))
     monkeypatch.setattr(pipeline_module, "LocalModels", Vision)
-    monkeypatch.setattr(pipeline_module, "find_regions", regions)
-    monkeypatch.setattr(pipeline_module, "render_region", render)
+    monkeypatch.setattr("src.offline.restoration.RestorationModels", Restorer)
+    monkeypatch.setattr(pipeline_module, "prepare_masked_regions", regions)
+    monkeypatch.setattr(pipeline_module, "render_masked_region", render)
     return calls
 
 
@@ -170,7 +178,7 @@ def test_agy_batch_pause_and_resume_preserves_completed_pages(tmp_path, fake_vis
     journal = create_batch(inputs, pipeline.fingerprint, {}, state_root=tmp_path / "state")
     events = []
     stopped = BatchRunner(pipeline, events.append).run(journal)
-    saved = json.loads(journal.read_text())
+    saved = json.loads(journal.read_text(encoding="utf-8"))
     completed = Path(saved["pages"][0]["output"])
     original_bytes = completed.read_bytes()
 
@@ -190,15 +198,14 @@ def test_agy_batch_pause_and_resume_preserves_completed_pages(tmp_path, fake_vis
 def vision_manifest(tmp_path):
     files = {}
     required = ["detector/inference.pdiparams", "detector/inference.json", "detector/inference.yml",
-                "ocr/pytorch_model.bin", "font/NotoSerifCJKtc-Regular.otf", "font/OFL.txt"]
+                "ocr/pytorch_model.bin"]
     for name in required:
         path = tmp_path / name
         path.parent.mkdir(exist_ok=True)
         path.write_bytes(b"synthetic-test-model")
         files[name] = model_module.sha256(path)
-    manifest = {"schema": 1, "specs": model_module.MODEL_SPECS,
-                "font_revision": "Serif2.003", "files": files}
-    model_module.atomic_json(tmp_path / "manifest.json", manifest)
+    manifest = {"schema": 1, "specs": model_module.MODEL_SPECS, "files": files}
+    model_module.atomic_json(tmp_path / "manifest-vision.json", manifest)
     return manifest
 
 
@@ -210,13 +217,21 @@ def test_cloud_verification_accepts_no_local_llm_but_rejects_bad_vision(tmp_path
         model_module.verify_models(tmp_path)
 
 
-def test_cloud_model_hash_does_not_depend_on_unused_local_llm(tmp_path):
+def test_noncanonical_model_paths_require_preparing_current_manifest(tmp_path):
     manifest = vision_manifest(tmp_path)
-    initial = model_module.verify_models(tmp_path)
+    manifest["files"] = {name.replace("/", "\\"): digest for name, digest in manifest["files"].items()}
+    model_module.atomic_json(tmp_path / "manifest-vision.json", manifest)
+    with pytest.raises(ModelError, match="prepare-models"):
+        model_module.verify_models(tmp_path)
+
+
+def test_obsolete_model_specs_are_rejected(tmp_path):
+    manifest = vision_manifest(tmp_path)
     manifest["specs"] = {**manifest["specs"], "translator": ["retired-model", "old-revision", []]}
     manifest["files"]["translator/Qwen3-4B-Q4_K_M.gguf"] = "missing-unused-file"
-    model_module.atomic_json(tmp_path / "manifest.json", manifest)
-    assert model_module.verify_models(tmp_path) == initial
+    model_module.atomic_json(tmp_path / "manifest-vision.json", manifest)
+    with pytest.raises(ModelError, match="版本"):
+        model_module.verify_models(tmp_path)
 
 
 def make_headless_gui(tmp_path):
@@ -245,7 +260,7 @@ def test_save_character_names_without_starting_translation(tmp_path):
     _, gui = make_headless_gui(tmp_path)
     gui.glossary = SimpleNamespace(get=lambda *args: "マリオ=瑪利歐\nピーチ=碧姬公主")
     gui.save_glossary()
-    assert json.loads(gui.settings.read_text())["glossary"] == "マリオ=瑪利歐\nピーチ=碧姬公主"
+    assert json.loads(gui.settings.read_text(encoding="utf-8"))["glossary"] == "マリオ=瑪利歐\nピーチ=碧姬公主"
     assert gui.pending.empty() and not gui.starts
 
 
@@ -350,7 +365,7 @@ def test_gui_output_submission_writes_to_selected_location(tmp_path, monkeypatch
     events = list(gui.events.queue)
     assert not any("error" in event for event in events)
     journal = Path(next(event["journal"] for event in events if "journal" in event))
-    page = json.loads(journal.read_text())["pages"][0]
+    page = json.loads(journal.read_text(encoding="utf-8"))["pages"][0]
     base = chosen or folder / "translated"
     assert Path(page["output"]).parent == base / "part1" / "final"
     assert Path(page["output"]).is_file()
@@ -366,7 +381,7 @@ def test_gui_resume_keeps_original_output_after_preference_change(tmp_path, monk
         Image.new("RGB", (30, 30), "white"), {"status": "success", "translated": 1}, Image.new("L", (30, 30))))
     journal = create_batch([source], gui.pipeline.fingerprint, {"old": "舊名"},
                            output=tmp_path / "old", state_root=tmp_path / "state")
-    original_output = json.loads(journal.read_text())["pages"][0]["output"]
+    original_output = json.loads(journal.read_text(encoding="utf-8"))["pages"][0]["output"]
     gui.output_directory = tmp_path / "new"
     gui.batch_output = gui.output_directory
     gui.pending.put(("resume", journal, False))
@@ -375,7 +390,7 @@ def test_gui_resume_keeps_original_output_after_preference_change(tmp_path, monk
     monkeypatch.setattr("src.gui.worker.create_batch", lambda *args, **kwargs: pytest.fail("Resume must keep its journal"))
     gui.work()
     assert not any("error" in event for event in list(gui.events.queue))
-    data = json.loads(journal.read_text())
+    data = json.loads(journal.read_text(encoding="utf-8"))
     assert data["status"] == "completed" and data["glossary"] == {"old": "舊名"}
     assert data["pages"][0]["output"] == original_output
     assert Path(original_output).is_file()
@@ -410,6 +425,11 @@ def test_cli_agy_without_explicit_cloud_consent_rejects_before_pipeline(monkeypa
 
 def test_gui_worker_builds_agy_pipeline_by_default(tmp_path, monkeypatch):
     from src.offline import translators
+    from src.platforms import macos
+
+    # This check injects in-process dependencies. Windows spawn/cancellation
+    # is exercised with real child processes in test_windows_worker.py.
+    monkeypatch.setattr("src.gui.worker.platform_support.create_pipeline", macos.create_pipeline)
 
     _, gui = make_headless_gui(tmp_path)
     gui.pipeline = None
@@ -436,7 +456,7 @@ def test_cli_explicit_cloud_consent_routes_to_agy(monkeypatch, tmp_path, command
     journal = tmp_path / "batch.json"
     monkeypatch.setattr(translators, "translator_from_settings", lambda: translator)
     monkeypatch.setattr(pipeline_module, "TranslationPipeline",
-                        lambda models, translator=None: created.append(translator) or SimpleNamespace(fingerprint={}))
+                        lambda models, translator=None, **options: created.append(translator) or SimpleNamespace(fingerprint={}))
     monkeypatch.setattr(batch, "create_batch", lambda *args, **kwargs: journal)
     monkeypatch.setattr(batch, "BatchRunner", lambda *args, **kwargs: SimpleNamespace(
         run=lambda journal, **options: ran.append(journal) or {"status": "completed"}))
@@ -446,25 +466,28 @@ def test_cli_explicit_cloud_consent_routes_to_agy(monkeypatch, tmp_path, command
     assert ran == [journal]
 
 
-def test_prepare_preserves_existing_full_model_manifest_and_agy_hash(tmp_path, monkeypatch):
+def test_prepare_records_only_current_models_and_preserves_unused_files(tmp_path, monkeypatch):
     import huggingface_hub
 
     manifest = vision_manifest(tmp_path)
-    translator = tmp_path / "translator/Qwen3-4B-Q4_K_M.gguf"
-    translator.parent.mkdir()
-    translator.write_bytes(b"existing-local-translator")
-    manifest["files"]["translator/Qwen3-4B-Q4_K_M.gguf"] = model_module.sha256(translator)
-    model_module.atomic_json(tmp_path / "manifest.json", manifest)
-    original_manifest = (tmp_path / "manifest.json").read_bytes()
+    untouched = []
+    for name in ('translator/retired.gguf', 'font/NotoSerifCJKtc-Regular.otf'):
+        path = tmp_path / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(b'unused-existing-file')
+        untouched.append(path)
+    old_manifest = tmp_path / 'manifest.json'
+    old_manifest.write_bytes(b'obsolete-model-metadata')
     original_hash = model_module.verify_models(tmp_path)
     downloads = []
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda repo, **kwargs: downloads.append(repo))
-
+    monkeypatch.setattr(huggingface_hub, 'snapshot_download', lambda repo, **kwargs: downloads.append(repo))
     model_module.prepare_models(tmp_path)
-
-    assert downloads == [model_module.MODEL_SPECS[name][0] for name in ("detector", "ocr")]
+    assert downloads == [model_module.MODEL_SPECS[name][0] for name in ('detector', 'ocr')]
+    current = json.loads((tmp_path / 'manifest-vision.json').read_text(encoding='utf-8'))
+    assert current['files'] == manifest['files']
     assert model_module.verify_models(tmp_path) == original_hash
-    assert (tmp_path / "manifest.json").read_bytes() == original_manifest
+    assert all(path.read_bytes() == b'unused-existing-file' for path in untouched)
+    assert old_manifest.read_bytes() == b'obsolete-model-metadata'
 
 
 def test_fresh_prepare_only_downloads_vision_and_needs_no_external_font(tmp_path, monkeypatch):
@@ -555,6 +578,8 @@ def test_cli_keyboard_interrupt_cleans_up_agy_process_group(monkeypatch, interru
 
 def test_gui_setup_failure_returns_sources_to_visible_staging(tmp_path, monkeypatch):
     from src.offline import translators
+    from src.platforms import macos
+    monkeypatch.setattr("src.gui.worker.platform_support.create_pipeline", macos.create_pipeline)
     _, gui = make_headless_gui(tmp_path)
     source = make_source(tmp_path)
     gui.pipeline = None
@@ -570,3 +595,28 @@ def test_gui_setup_failure_returns_sources_to_visible_staging(tmp_path, monkeypa
     assert {'restage': [('new', source, False)]} in events
     assert {'error': 'models unavailable'} in events
     assert gui.pending.empty()
+
+
+def test_missing_current_manifest_does_not_fall_back_to_retired_name(tmp_path):
+    vision_manifest(tmp_path)
+    (tmp_path / "manifest-vision.json").rename(tmp_path / "manifest.json")
+    with pytest.raises(ModelError, match="prepare-models"):
+        model_module.verify_models(tmp_path)
+
+
+def test_current_manifest_rejects_retired_font_entries(tmp_path):
+    manifest = vision_manifest(tmp_path)
+    manifest["files"]["font/NotoSerifCJKtc-Regular.otf"] = "unused"
+    model_module.atomic_json(tmp_path / "manifest-vision.json", manifest)
+    with pytest.raises(ModelError, match="prepare-models"):
+        model_module.verify_models(tmp_path)
+
+
+@pytest.mark.parametrize("mode", ["auto", "legacy", "enhanced"])
+def test_cli_rejects_removed_restoration_selector(monkeypatch, capsys, mode):
+    import offline
+    monkeypatch.setattr(sys, "argv", ["offline.py", "translate", "page.png", "--restoration", mode])
+    with pytest.raises(SystemExit) as error:
+        offline.main()
+    assert error.value.code == 2
+    assert "--restoration" in capsys.readouterr().err

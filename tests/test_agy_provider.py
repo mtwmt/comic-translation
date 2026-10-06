@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from src.offline.agy_provider import AgyTranslator, MODEL, parse_translation
+from src.offline.agy_provider import AgyTranslator, DEFAULT_MODEL as MODEL, parse_translation
 from src.offline.translation_common import request_payload
 from src.offline.models import ModelError
 
@@ -76,3 +76,19 @@ def test_missing_agy_raises_install_hint(monkeypatch):
     with pytest.raises(agy_provider.AgyNotInstalled):
         agy_provider.AgyTranslator()
     assert agy_provider.INSTALL_URL.startswith("https://antigravity.google/")
+
+
+def test_agy_effort_choices_only_use_cli_returned_variants(monkeypatch):
+    from src.offline import agy_provider
+    names = ['gemini-test-flash-high', 'gemini-test-flash-medium', 'gemini-test-flash-low',
+             'gemini-test-pro-high', 'gemini-test-pro-low', 'gpt-oss-120b-medium', 'custom-model']
+    monkeypatch.setattr(agy_provider, 'run_cli', lambda *args: '\n'.join(f'{name}\tLabel' for name in names))
+    catalog = agy_provider.list_models('/fake/agy')
+    assert [name for name, _ in catalog] == names
+    flash = catalog.capabilities['gemini-test-flash-medium']
+    assert flash['selected_effort'] == 'medium' and flash['fast'] is False
+    assert flash['effort_models'] == {'high': names[0], 'medium': names[1], 'low': names[2]}
+    assert catalog.capabilities['gemini-test-pro-low']['efforts'] == ['high', 'low']
+    assert catalog.capabilities['gpt-oss-120b-medium']['efforts'] == ['medium']
+    assert 'custom-model' not in catalog.capabilities
+    assert agy_provider.model_capabilities([None, 'invalid model-low']) == {}

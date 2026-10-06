@@ -10,6 +10,7 @@ from tkinter import ttk
 
 from src.offline.batch import STATE_ROOT
 from src.gui.actions import ActionsMixin
+from src.platforms import current as platform_support
 from src.gui.settings import SettingsMixin
 from src.gui.staging import StagingMixin
 from src.gui.theme import configure_style
@@ -21,10 +22,13 @@ class OfflineGUI(ViewMixin, SettingsMixin, StagingMixin, WorkerMixin, ActionsMix
     def __init__(self, root):
         self.root = root
         root.title("漫畫翻譯器")
-        root.geometry("920x700")
-        root.minsize(780, 700)
+        platform_support.configure_app_icon(root)
+        scale = platform_support.window_scale(root)
+        root.geometry(f"{round(920 * scale)}x{round(700 * scale)}")
+        root.minsize(round(780 * scale), round(700 * scale))
         self.init_state()
         self.heading_font = configure_style(root)
+        self.build_menu()
         frame = ttk.Frame(root, padding=10, style="Card.TFrame")
         frame.pack(fill="both", expand=True)
         frame.columnconfigure(0, weight=1)
@@ -48,6 +52,8 @@ class OfflineGUI(ViewMixin, SettingsMixin, StagingMixin, WorkerMixin, ActionsMix
         root.after(100, self.poll)
         self.restore_previous_session()
         self.check_font()
+        if platform_support.CACHE_MODEL_CATALOG:
+            root.after_idle(self.initialize_model_list)
 
     def init_state(self):
         self.events = queue.Queue()
@@ -58,6 +64,7 @@ class OfflineGUI(ViewMixin, SettingsMixin, StagingMixin, WorkerMixin, ActionsMix
         self.batch_output = None
         self.history = {}
         self.history_ids = {}
+        self.row_keys = {}
         self.source_reports = {}
         self.busy = False
         self.worker = None
@@ -69,6 +76,7 @@ class OfflineGUI(ViewMixin, SettingsMixin, StagingMixin, WorkerMixin, ActionsMix
         self.latest_report = None
         self.unfinished_batches = []
         self.review_windows = []
+        self.usage_window = None
         self.had_error = False
         self.preparing = False
         self.status = tk.StringVar(value="加入圖片或資料夾，確認後開始翻譯。")
@@ -88,10 +96,6 @@ class OfflineGUI(ViewMixin, SettingsMixin, StagingMixin, WorkerMixin, ActionsMix
                 for page in saved.get("pages", []):
                     output = Path(page["output"])
                     report = Path(page.get("report", output.with_suffix(".json")))
-                    copied = output.parent / "成品" / output.name
-                    if copied.is_file():
-                        output = copied
-                        report = output.parent.parent / "工作資料" / output.with_suffix(".json").name
                     self.remember_report(page["source"], report)
                     if output.is_file():
                         recent_outputs.append((output.stat().st_mtime, output, report))
@@ -112,6 +116,6 @@ class OfflineGUI(ViewMixin, SettingsMixin, StagingMixin, WorkerMixin, ActionsMix
     def check_font(self):
         from src.offline.fonts import resolve_font
         try:
-            resolve_font(ROOT / "models")
+            resolve_font()
         except RuntimeError as error:
             self.status.set(str(error))

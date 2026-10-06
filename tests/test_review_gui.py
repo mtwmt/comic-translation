@@ -1,5 +1,6 @@
 """Exercise the real review widgets with local fakes; never sends user data."""
 import json
+import gc
 import os
 import tkinter as tk
 from copy import deepcopy
@@ -17,6 +18,7 @@ pytestmark = pytest.mark.skipif(os.environ.get('COMIC_GUI_TESTS') != '1', reason
 
 @pytest.fixture
 def window(tmp_path, monkeypatch):
+    gc.collect()  # Tk variables from earlier windows must be finalized on the UI thread.
     image = Image.new('RGB', (500,600), 'white')
     ImageDraw.Draw(image).rectangle([120,120,150,150], fill='black')
     source = tmp_path/'source.png'
@@ -84,10 +86,11 @@ def test_box_ocr_edit_translate_only_selected_and_delete(window, monkeypatch):
     assert calls == [([{'id':'r002','text':'おまたせ〜っ♡'}], {'クリボン':'栗邦邦'})]
     assert app.translation.get('1.0','end-1c') == '久等了～♡'
     assert app.report['regions'][0]['translation'] == before['translation']
-    app.delete_manual()
+    app.delete_region()
     assert len(app.report['regions']) == 1
     assert app.report['regions'][0]['translation'] == before['translation']
-    assert app.delete_button.instate(['disabled'])
+    from src.platforms import current
+    assert app.delete_button.instate(['!disabled'] if current.DELETE_DETECTED_REGIONS else ['disabled'])
     assert not app.test_errors
 
 
@@ -129,7 +132,7 @@ def test_manual_region_applies_and_reopens_saved_report(window, monkeypatch):
     app.report['fingerprint']['restoration'] = 'test'
     app.restorer = SimpleNamespace(fingerprint='test', inpaint=lambda im, mask: Image.new('RGB', im.size, 'white'))
     font = Path(__file__).resolve().parents[1] / 'assets/fonts/NotoSansCJKtc-Bold.otf'
-    monkeypatch.setattr('src.offline.review.resolve_font', lambda _: (font, {}))
+    monkeypatch.setattr('src.offline.review.resolve_font', lambda: (font, {}))
     original_report = app.report_path.read_bytes()
     app.apply()
     finish(app)
@@ -239,7 +242,7 @@ def wait_until(app, predicate):
     while not predicate() and time.monotonic() < deadline:
         app.root.update()
         time.sleep(.01)
-    assert predicate()
+    assert predicate(), app.status.get()
 
 
 def fake_preview_renderer(snapshot, models, restorer):
@@ -429,3 +432,125 @@ def test_detected_region_box_can_be_resized_and_keeps_its_text(window):
     assert resized['original'] == '既有原文' and resized['translation'] == '原有譯文'
     assert resized['manual'] and resized['label'] is None and resized['polygons'] == []
     assert len(app.report['regions']) == 1
+
+
+def test_delete_automatic_region_restores_original_and_saves_empty_revision(window, monkeypatch):
+    import numpy as np
+    from pathlib import Path
+    from src.platforms import windows
+    monkeypatch.setattr('src.offline.review_gui.platform_support', windows)
+    monkeypatch.setattr('src.offline.review.platform_support', windows)
+    app = window
+    app.report['fingerprint']['restoration'] = 'fixture'
+    app.restorer = app.preview_restorer = SimpleNamespace(fingerprint='fixture')
+    font = Path(__file__).resolve().parents[1]/'assets/fonts/NotoSansCJKtc-Bold.otf'
+    monkeypatch.setattr('src.offline.review.resolve_font', lambda: (font, {}))
+    app.result = Image.new('RGB', app.original.size, 'gray')
+    before = app.report_path.read_bytes()
+    app.delete_region()
+    assert app.report['regions'] == [] and app.index is None
+    assert app.delete_button.instate(['disabled'])
+    app.preview_now()
+    wait_until(app, lambda: '預覽已更新' in app.status.get())
+    assert np.array_equal(np.asarray(app.result), np.asarray(app.original))
+    app.apply()
+    finish(app)
+    assert not app.test_errors
+    assert app.report_path.read_bytes() == before
+    output = Path(app.report['output_path'])
+    with Image.open(output) as saved:
+        assert np.array_equal(np.asarray(saved), np.asarray(app.original))
+    assert json.loads(output.with_suffix('.json').read_text(encoding='utf-8'))['regions'] == []
+
+
+def test_auto_font_adjustment_is_not_blocked_by_unchanged_preserved_region(window, monkeypatch):
+    from src.platforms import windows
+    monkeypatch.setattr('src.offline.review_gui.platform_support', windows)
+    app = window
+    blocked = deepcopy(app.report['regions'][0])
+    blocked.update(id='blocked', status='preserved', reason='遮罩碰到框線')
+    app.report['regions'].append(blocked)
+    app.rendered_report = deepcopy(app.report)
+    app.preview_restorer = object()
+    def render(snapshot, models, restorer):
+        revised = deepcopy(snapshot)
+        revised['regions'][0].update(status='translated', font_size=revised['regions'][0]['font_size_override'])
+        return Image.new('RGB', app.original.size, 'gray'), revised, Image.new('L', app.original.size, 0)
+    monkeypatch.setattr('src.offline.review_gui.rerender', render)
+    app.font_size.set('20')
+    app.preview_now()
+    wait_until(app, lambda: '預覽已更新' in app.status.get())
+    assert not app.report['regions'][0].get('manual')
+    assert app.report['regions'][0]['font_size'] == 20
+    assert app.report['regions'][1]['status'] == 'preserved'
+    assert app.result.getpixel((0,0)) == (128,128,128)
+
+
+def test_macos_keeps_manual_deletion_and_strict_preview_policy(window, monkeypatch):
+    from src.platforms import macos
+    from src.offline.review_gui import require_rendered_translations
+    monkeypatch.setattr('src.offline.review_gui.platform_support', macos)
+    app = window
+    app.set_busy(False)
+    assert app.delete_button.instate(['disabled'])
+    app.delete_region()
+    assert len(app.report['regions']) == 1
+    failed = {'regions': [dict(id='failed', status='preserved', translation='已翻譯')]}
+    with pytest.raises(ValueError):
+        require_rendered_translations(failed, deepcopy(failed))
+
+
+def test_windows_edited_failures_and_previously_rendered_regressions_still_block(monkeypatch):
+    from src.platforms import windows
+    from src.offline.review_gui import require_rendered_translations
+    monkeypatch.setattr('src.offline.review_gui.platform_support', windows)
+    prior = {'regions': [dict(id='region', status='preserved', translation='已翻譯', font_size_override=0)]}
+    require_rendered_translations(deepcopy(prior), prior)
+    edited = deepcopy(prior)
+    edited['regions'][0]['font_size_override'] = 20
+    with pytest.raises(ValueError, match='region'):
+        require_rendered_translations(edited, prior)
+    prior['regions'][0]['status'] = 'translated'
+    with pytest.raises(ValueError, match='region'):
+        require_rendered_translations(edited, prior)
+
+
+def test_side_controls_scroll_when_short_and_reset_when_restored(window):
+    from tkinter import ttk
+    app = window
+    side = app.apply_button.master.master.master
+    assert isinstance(side, tk.Canvas)
+    scrollbar = next(widget for widget in side.master.winfo_children()
+                     if isinstance(widget, ttk.Scrollbar))
+    app.root.geometry("1200x500")
+    app.root.update()
+    assert scrollbar.winfo_ismapped()
+    side.yview_moveto(1)
+    app.root.update()
+    assert side.yview()[1] == pytest.approx(1)
+    controls = app.apply_button.master.master
+    assert controls.winfo_y() + app.apply_button.winfo_rooty() - controls.winfo_rooty() \
+        + app.apply_button.winfo_height() <= side.winfo_height()
+    app.root.geometry("1200x1600")
+    app.root.update()
+    assert not scrollbar.winfo_ismapped()
+    assert side.yview()[0] == 0
+
+
+@pytest.mark.parametrize("platform_name, scale, desired_height", [("windows", 1.75, 920), ("macos", 1, 850)])
+def test_review_geometry_scales_and_is_clamped_to_screen(window, monkeypatch, platform_name, scale, desired_height):
+    from src.platforms import macos, windows
+    platform = windows if platform_name == "windows" else macos
+    monkeypatch.setattr("src.offline.review_gui.platform_support", platform)
+    monkeypatch.setattr(platform, "window_scale", lambda root: scale)
+    root = tk.Toplevel(window.root)
+    monkeypatch.setattr(root, "winfo_screenwidth", lambda: 1600)
+    monkeypatch.setattr(root, "winfo_screenheight", lambda: 900)
+    try:
+        app = ReviewWindow(root, window.report_path, window.models)
+        root.update()
+        assert root.winfo_width() == min(round(1200 * scale), 1560)
+        assert root.winfo_height() == min(round(desired_height * scale), 820)
+        assert isinstance(app.apply_button.master.master.master, tk.Canvas)
+    finally:
+        root.destroy()

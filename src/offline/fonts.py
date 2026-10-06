@@ -81,7 +81,7 @@ def match_face(path, family, style):
     return None
 
 
-def resolve_font(models):
+def resolve_font():
     for candidate in system_font_candidates():
         matched = match_face(*candidate)
         if matched:

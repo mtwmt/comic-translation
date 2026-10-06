@@ -1,1 +1,1 @@
-"""Offline manga pipeline. Never imports the legacy paid API engine."""
+"""Local manga image processing with subscription CLI text translation."""

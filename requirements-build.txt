@@ -1,0 +1,3 @@
+# Install in the existing Python 3.11 Windows environment with requirements.txt.
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.8

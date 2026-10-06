@@ -13,7 +13,7 @@ def find_source_report(source, known_reports=(), source_root=None):
     for root in roots:
         if source.is_relative_to(root):
             output = root / "translated" / source.relative_to(root).parent
-            directories.update((output, output / "work", output / "工作資料"))
+            directories.add(output / "work")
     for directory in directories:
         candidates.update(directory.glob("*.json"))
     dated = []

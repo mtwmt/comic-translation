@@ -11,6 +11,7 @@ from .storage import available_path, atomic_json, save_png, sha256
 from .restoration import RestorationModels
 from .fonts import resolve_font, FontFace
 from .layout import LAYOUT_VERSION, plan_page_lettering, render_masked_region
+from src.platforms import current as platform_support
 
 
 def load_source(report):
@@ -27,7 +28,10 @@ def rerender(report, models: Path, restorer=None):
     """The report contains editable translations/masks; always start at source."""
     original = load_source(report)
     updated = deepcopy(report)
-    font_path, font_details = resolve_font(models)
+    if platform_support.DELETE_DETECTED_REGIONS:
+        from src.platforms.windows_layout import resolve_duplicate_regions
+        resolve_duplicate_regions(updated["regions"], revision=True)
+    font_path, font_details = resolve_font()
     font = FontFace(font_path, font_details.get("index", 0))
     updated["fingerprint"]["font"] = font_details
     updated["fingerprint"]["layout"] = LAYOUT_VERSION
@@ -40,6 +44,10 @@ def rerender(report, models: Path, restorer=None):
     result, summary, mask = render_page(original, updated["regions"],
         lambda region: render_masked_region(original, region, font, restorer),
         retry_preserved=True, missing_reason="尚未填寫譯文", text_status="edited")
+    if platform_support.DELETE_DETECTED_REGIONS:
+        for region in updated["regions"]:
+            if region.get("duplicate_of") and not region.get("enabled", True):
+                region["reason"] = f"大範圍偵測與 {region['duplicate_of']} 原文重複，已保留較小文字區域"
     updated.update(summary)
     updated.update(mode="local-revision",
                    text_translated=sum(bool(r.get("translation", "").strip()) for r in updated["regions"]),
@@ -54,7 +62,7 @@ def save_revision(report_path, image, report, mask):
     source_output = Path(report["output_path"]) if metadata_dir else report_path.with_suffix(".png")
     target = available_path(source_output.with_name(Path(report["source"]).stem + "_zh-TW_revised.png"), set(), uuid.uuid4().hex, metadata_dir)
     metadata = metadata_dir / target.name if metadata_dir else target
-    if report["translated"]:
+    if report["translated"] or (platform_support.DELETE_DETECTED_REGIONS and report.get("deleted_region_ids")):
         save_png(target, image)
         save_png(metadata.with_name(metadata.stem + ".mask.png"), mask)
     report["output_path"] = str(target)

@@ -13,13 +13,20 @@ LAYOUT_VERSION = "mask-lettering-5"
 MASK_VERSION = "character-mask-2"
 
 
-def complete_character_mask(image, seed, polygons):
+def ink_components(image):
+    """Page-wide ink labelling; compute once when completing several masks."""
+    gray = np.asarray(image.convert("L"))
+    _, labels, stats, _ = cv2.connectedComponentsWithStats((gray < 225).astype(np.uint8), 8)
+    return gray, labels, stats
+
+
+def complete_character_mask(image, seed, polygons, components=None):
     """Complete bounded ink components, including small furigana on white paper.
 
     Never grow through a component that leaves the detector's local footprint:
     that is often a panel border, balloon outline or an illustration stroke.
     """
-    gray = np.asarray(image.convert("L"))
+    gray, labels, stats = components or ink_components(image)
     h, w = gray.shape
     support = np.zeros((h, w), np.uint8)
     for poly in polygons:
@@ -27,7 +34,6 @@ def complete_character_mask(image, seed, polygons):
     radius = max(1, round(min(w, h) / 650))
     margin = max(3, round(min(w, h) * .005))
     support = cv2.dilate(support, np.ones((2 * margin + 1,) * 2, np.uint8)) > 0
-    _, labels, stats, _ = cv2.connectedComponentsWithStats((gray < 225).astype(np.uint8), 8)
     contained = np.bincount(labels[support], minlength=len(stats))
     covered = np.bincount(labels[seed], minlength=len(stats))
     accepted = np.zeros(len(stats), bool)
@@ -62,12 +68,10 @@ def find_regions(image: Image.Image, detections: list, text_mask=None) -> tuple[
     _, ink_labels, ink_stats, _ = cv2.connectedComponentsWithStats((gray < 215).astype("uint8"), connectivity=8)
     total = np.bincount(ink_labels.ravel())
     inside = np.bincount(ink_labels[detection_mask > 0], minlength=len(total))
-    glyph_boxes = []
     for label in range(1, len(total)):
-        x, y, w, h, area = ink_stats[label]
+        _, _, w, h, _ = ink_stats[label]
         if inside[label] / total[label] >= 0.92 and w < max(48, width * .065) and h < max(48, height * .065):
             white[ink_labels == label] = 1
-            glyph_boxes.append([max(0, int(x) - 1), max(0, int(y) - 1), min(width, int(x + w) + 1), min(height, int(y + h) + 1)])
     # Small threshold/antialias gaps are closed on the analysis copy only.
     white = cv2.morphologyEx(white, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     if text_mask is not None:
@@ -95,10 +99,6 @@ def find_regions(image: Image.Image, detections: list, text_mask=None) -> tuple[
         x1, y1 = points.min(axis=0)
         x2, y2 = points.max(axis=0) + 1
         group["bbox"] = [int(x1), int(y1), int(x2), int(y2)]
-        group["erase_boxes"] = [box for box in glyph_boxes
-                                if x1 <= (box[0] + box[2]) / 2 <= x2 and y1 <= (box[1] + box[3]) / 2 <= y2
-                                and group["label"] is not None
-                                and int(labels[(box[1] + box[3]) // 2, (box[0] + box[2]) // 2]) == group["label"]]
         group["direction"] = "vertical" if y2 - y1 >= (x2 - x1) * 0.7 else "horizontal"
     # Geometric ordering is provisional; translation IDs prevent reordered outputs.
     regions.sort(key=lambda r: (r["bbox"][1] // max(1, height // 8), -r["bbox"][2], r["bbox"][1]))
@@ -107,9 +107,14 @@ def find_regions(image: Image.Image, detections: list, text_mask=None) -> tuple[
     return regions, labels
 
 
-def prepare_masked_regions(image, detections, text_mask, line_boxes=()):
+def prepare_masked_regions(image, detections, text_mask, line_boxes=(), refine=None):
+    """`refine(image, detections, completed_mask)` may adjust the mask before grouping."""
     from .restoration import encode_mask
-    text_mask = complete_character_mask(image, text_mask, [p for p, _ in detections])
+    components = ink_components(image)
+    polygons = [p for p, _ in detections]
+    text_mask = complete_character_mask(image, text_mask, polygons, components)
+    if refine is not None:
+        text_mask = complete_character_mask(image, refine(image, detections, text_mask), polygons, components)
     regions, labels = find_regions(image, detections, text_mask)
     h, w = labels.shape
     for region in regions:
@@ -137,7 +142,7 @@ def prepare_masked_regions(image, detections, text_mask, line_boxes=()):
             # in the gaps between their polygons, so refine their joint text
             # footprint only after confirming they share a closed balloon.
             block = np.array([[x1, y1], [x2-1, y1], [x2-1, y2-1], [x1, y2-1]])
-            completed = complete_character_mask(image, erase, [block])
+            completed = complete_character_mask(image, erase, [block], components)
             candidates, local_labels = find_regions(image, [(block, 1.0)], completed)
             if len(candidates) == 1 and candidates[0]["label"] is not None:
                 interior = local_labels == candidates[0]["label"]
@@ -263,22 +268,12 @@ def plan_page_lettering(image, regions, font_path):
 def render_masked_region(image, region, font_path, restorer):
     """Validate lettering first. An unsuccessful region never leaves a hole."""
     from .restoration import decode_mask
+    if region.get("mask_version") != MASK_VERSION:
+        raise ValueError("遮罩版本不支援，請重新建立辨識報告")
     rgb = np.asarray(image)
     h, w = rgb.shape[:2]
     erase = decode_mask(region["erase_mask"], (h, w))
     safe = decode_mask(region["layout_mask"], (h, w))
-    # Upgrade old automatic masks once; never override a user's brush edits.
-    if region.get("mask_version") != MASK_VERSION and region.get("layout_version") not in {"mask-lettering-2", "mask-lettering-3", "mask-lettering-4", LAYOUT_VERSION} and not region.get("mask_edited") and region.get("polygons"):
-        refined = complete_character_mask(image, erase, region["polygons"])
-        regions, _ = prepare_masked_regions(image, [(p, 1.0) for p in region["polygons"]], refined)
-        if len(regions) == 1:
-            for key in ("label", "erase_mask", "layout_mask", "interior_mask", "requires_review"):
-                if key in regions[0]:
-                    region[key] = regions[0][key]
-            erase = decode_mask(region["erase_mask"], (h, w))
-            safe = decode_mask(region["layout_mask"], (h, w))
-        region["layout_version"] = LAYOUT_VERSION
-    region["mask_version"] = MASK_VERSION
     region["layout_version"] = LAYOUT_VERSION
     if not erase.any() or not safe.any():
         raise ValueError("文字遮罩或排版範圍為空，請在預覽調整")
@@ -457,59 +452,3 @@ def glyph_layer(size, text, box, font_path, font_size, vertical, protected_terms
             # to the target box. The caller checks it against the balloon mask.
             layer.paste(cell, (round(cx-cell.width/2), round(cy-cell.height/2)))
     return np.asarray(layer)
-
-
-def render_region(image, region, labels, font_path):
-    height, width = labels.shape
-    interior = (labels == region["label"]).astype("uint8")
-    safe = cv2.erode(interior, np.ones((7, 7), np.uint8)) > 0
-    erase = np.zeros_like(interior)
-    for x1, y1, x2, y2 in region["erase_boxes"]:
-        erase[y1:y2, x1:x2] = 1
-    erase = erase > 0
-    rgb = np.asarray(image)
-    erase &= rgb.min(axis=2) < 250
-    if not np.any(erase):
-        raise ValueError("無法安全分離原文字筆畫")
-    # Erasure has its own boundary: it must stay inside the balloon but does
-    # not need the larger margin used for newly placed Chinese glyphs.
-    if np.any(erase & ~(interior > 0)):
-        raise ValueError("原字太靠近框線，保留原文")
-    background = rgb[safe & ~erase]
-    if len(background) < 100 or np.quantile(background.min(axis=1), 0.05) < 230:
-        raise ValueError("對話框不是乾淨白底，保留原文")
-    ys, xs = np.where(safe)
-    x1, y1, x2, y2 = region["bbox"]
-    # Anchor layout near the original text, not the centroid of white space
-    # that may include a balloon tail or other connected background.
-    margin = max(4, min(16, int(min(x2 - x1, y2 - y1) * .15)))
-    box = (max(int(xs.min()) + 2, x1 - margin), max(int(ys.min()) + 2, y1 - margin),
-           min(int(xs.max()) - 1, x2 + margin), min(int(ys.max()) - 1, y2 + margin))
-    minimum = max(12, round(min(width, height) * 0.012))
-    scale = max(1.0, min(width, height) / 1000)
-    initial = max(minimum, min(round(36 * scale),
-                  max(round(16 * scale), int(min(x2 - x1, y2 - y1) / max(1, len(region["polygons"]))))))
-    glyphs = None
-    # Try the source footprint first, then the available balloon interior.
-    # A longer translation must be able to use existing empty balloon space.
-    boxes = [box, (int(xs.min()) + 2, int(ys.min()) + 2, int(xs.max()) - 1, int(ys.max()) - 1)]
-    for layout_box in boxes:
-        for font_size in range(initial, minimum - 1, -1):
-            candidate = glyph_layer((width, height), region["translation"], layout_box, font_path, font_size,
-                                    region["direction"] == "vertical")
-            if candidate is not None and np.any(candidate) and not np.any((candidate > 0) & ~safe):
-                glyphs = candidate
-                break
-        if glyphs is not None:
-            break
-    if glyphs is None:
-        raise ValueError("中文無法以可讀字級放入安全區域，保留原文")
-    output = rgb.copy()
-    # Only original dark glyph pixels are erased, not the full rectangular crop.
-    erase &= rgb.min(axis=2) < 250
-    output[erase] = np.median(background, axis=0).astype("uint8")
-    alpha = glyphs.astype(float) / 255
-    output = np.rint(output * (1 - alpha[:, :, None])).astype("uint8")
-    change_mask = erase | (glyphs > 0)
-    region["font_size"] = font_size
-    return Image.fromarray(output), change_mask

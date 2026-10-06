@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from .models import ModelError
+from src.platforms import current as platform_support
 
 
 class LocalModels:
@@ -18,16 +19,17 @@ class LocalModels:
 
     def detect(self, image, **options):
         import numpy as np
-        if self.detector is None:
-            try:
-                from paddleocr import TextDetection
-                self.detector = TextDetection(model_name="PP-OCRv5_mobile_det",
-                                              model_dir=str(self.root / "detector"),
-                                              device="cpu", enable_mkldnn=False)
-            except Exception as error:
-                raise ModelError(f"文字偵測模型載入失敗：{error}") from error
-        result = next(iter(self.detector.predict(np.array(image)[:, :, ::-1],
-                                                 limit_side_len=1536, limit_type="max", **options)))
+        with platform_support.detector_context(self.root / "detector") as directory:
+            if self.detector is None:
+                try:
+                    from paddleocr import TextDetection
+                    self.detector = TextDetection(model_name="PP-OCRv5_mobile_det",
+                                                  model_dir=directory,
+                                                  device="cpu", enable_mkldnn=False)
+                except Exception as error:
+                    raise ModelError(f"文字偵測模型載入失敗：{error}") from error
+            result = next(iter(self.detector.predict(np.array(image)[:, :, ::-1],
+                                                     limit_side_len=1536, limit_type="max", **options)))
         return [(np.asarray(poly).astype(int), float(score))
                 for poly, score in zip(result["dt_polys"], result["dt_scores"])]
 

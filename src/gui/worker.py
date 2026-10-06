@@ -8,10 +8,14 @@ import time
 from pathlib import Path
 
 from src.offline.cli_common import CliNotInstalled
+from src.offline.cancellation import OperationCancelled
 from src.offline.batch import BatchRunner, create_batch, discover, parse_glossary
 from src.gui.staging import STATE_LABELS
+from src.platforms import current as platform_support
 
-ROOT = Path(__file__).resolve().parents[2]
+from src.runtime_paths import app_root
+
+ROOT = app_root()
 
 STAGE_NAMES = {"偵測文字": "尋找對話文字", "日文辨識": "讀取日文對白",
                "清字與排版": "替換文字並排版", "開始": "準備圖片"}
@@ -109,7 +113,7 @@ class WorkerMixin:
             self.update_name_count()
         self.staged = [job for job in self.staged if job not in jobs]
         if hasattr(self, "source_list"):
-            self.source_list.selection_remove(self.source_list.selection())
+            platform_support.after_submit(self.source_list)
         self.refresh_staged()
         self.start_worker()
 
@@ -140,6 +144,7 @@ class WorkerMixin:
         self.provider_box.configure(state="disabled" if busy else "readonly")
         self.model_box.configure(state="disabled" if busy else "normal")
         self.model_refresh_button.configure(state="disabled" if busy else "normal")
+        self.refresh_translation_controls()
         self.choose_output_button.configure(state="disabled" if busy else "normal")
         self.reset_output_button.configure(state="disabled" if busy or not self.output_directory else "normal")
 
@@ -147,7 +152,7 @@ class WorkerMixin:
         self.stop_requested.set()
         if self.runner:
             self.runner.stop.set()
-        self.status.set("停止中：等待目前頁面安全保存，不會開始下一頁。")
+        self.status.set(platform_support.STOP_MESSAGE)
         self.start_button.configure(text="停止中…")
         self.start_button.configure(state="disabled")
 
@@ -158,9 +163,8 @@ class WorkerMixin:
         try:
             if self.pipeline is None:
                 self.events.put({"stage": "檢查翻譯所需檔案（首次啟動可能需要一點時間）"})
-                from src.offline.pipeline import TranslationPipeline
-                from src.offline.translators import create_translator
-                self.pipeline = TranslationPipeline(ROOT / "models", translator=create_translator(*self.translator_choice()))
+                self.pipeline = platform_support.create_pipeline(
+                    ROOT / "models", self.pipeline_choice(), self.stop_requested)
             while not self.stop_requested.is_set():
                 try:
                     kind, value, options = self.pending.get_nowait()
@@ -183,11 +187,18 @@ class WorkerMixin:
                 if result["status"] == "stopped":
                     break
                 current = None
+        except OperationCancelled:
+            pass
         except CliNotInstalled as error:
             self.events.put({"error": str(error), "cli_missing": True, "install_url": error.install_url})
         except Exception as error:
             self.events.put({"error": str(error)})
         finally:
+            try:
+                self.pipeline = platform_support.finish_pipeline(self.pipeline)
+            except Exception as error:
+                self.pipeline = None
+                self.events.put({"error": f"清理處理程序失敗：{error}"})
             # A failed setup or stopped batch goes back to the visible list;
             # the user can review it and press Start again, without re-adding.
             remaining = []

@@ -8,11 +8,21 @@ from tkinter import ttk
 
 from src.gui.widgets import ProgressLine
 from src.offline.translators import PROVIDERS
+from src.platforms import current as platform_support
 
 NAMES_HINT = "每行一組：日文原名=繁中譯名\n例如：マリオ=瑪利歐\n\n儲存後，下次開始翻譯時套用。\n續跑沿用原批次對照。"
 
 
 class ViewMixin:
+    def build_menu(self):
+        self.menu_bar = tk.Menu(self.root)
+        self.help_menu = tk.Menu(self.menu_bar, tearoff=False)
+        self.help_menu.add_command(label="使用說明", command=self.show_usage)
+        self.help_menu.add_separator()
+        self.help_menu.add_command(label="關於", command=self.show_about)
+        self.menu_bar.add_cascade(label="說明", menu=self.help_menu)
+        self.root.configure(menu=self.menu_bar)
+
     def build_toolbar(self, frame):
         toolbar = ttk.Frame(frame, style="Card.TFrame")
         toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
@@ -117,6 +127,7 @@ class ViewMixin:
         self.reset_output_button = ttk.Button(meta, text="恢復預設", command=lambda: self.set_output_directory(None),
                                               style="Compact.TButton", state="normal" if self.output_directory else "disabled")
         self.reset_output_button.grid(row=0, column=3)
+        platform_support.configure_output_row(self)
 
     def build_progress(self, frame):
         self.progress_text = tk.StringVar(value="尚未加入圖片")
@@ -175,10 +186,12 @@ class ViewMixin:
         self.provider_box.bind("<<ComboboxSelected>>", self.on_provider_selected)
         ttk.Label(row, text="模型", style="Muted.TLabel").pack(side="left")
         self.model_name = tk.StringVar(value=model)
-        self.model_box = ttk.Combobox(row, textvariable=self.model_name, width=28)
+        self.model_box = ttk.Combobox(row, textvariable=self.model_name, width=28,
+                                    values=self.cached_model_names(provider))
         self.model_box.pack(side="left", padx=(6, 6), fill="x", expand=True)
         for sequence in ("<<ComboboxSelected>>", "<Return>", "<FocusOut>"):
             self.model_box.bind(sequence, self.on_model_committed)
         self.model_refresh_button = ttk.Button(row, text="查詢可用模型", command=self.refresh_model_list,
                                                style="Compact.TButton")
         self.model_refresh_button.pack(side="left")
+        platform_support.configure_translator_controls(self)

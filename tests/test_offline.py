@@ -7,7 +7,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from src.offline.batch import BatchRunner, create_batch, discover, parse_glossary
-from src.offline.layout import find_regions, render_region
+from src.offline.layout import find_regions, prepare_masked_regions, render_masked_region
 from src.offline.models import ModelError
 
 
@@ -43,7 +43,7 @@ def batch(tmp_path, pipeline, names=("page10.jpg", "page2.png")):
 
 
 def load(path):
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def test_glossary():
@@ -57,8 +57,13 @@ def test_discovery_sort_dedup_and_exclusions(tmp_path):
     folder = sources(tmp_path)
     (folder / "translated").mkdir()
     Image.new("RGB", (1, 1)).save(folder / "translated" / "old.png")
-    (folder / "link.png").symlink_to(folder / "page2.png")
-    (folder / "cycle").symlink_to(folder, target_is_directory=True)
+    try:
+        (folder / "link.png").symlink_to(folder / "page2.png")
+        (folder / "cycle").symlink_to(folder, target_is_directory=True)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows account lacks symlink privilege")
+        raise
     found = discover([folder, folder / "page2.png"])
     assert [p.name for p, root in found] == ["page2.png", "page10.jpg"]
 
@@ -224,9 +229,14 @@ def test_pixel_preservation_and_safe_glyphs():
     draw = ImageDraw.Draw(image)
     draw.rectangle((100, 100, 200, 220), fill="white", outline="black", width=3)
     draw.rectangle((125, 125, 145, 170), fill="black")
-    regions, labels = find_regions(image, [(np.array([[123, 123], [147, 123], [147, 172], [123, 172]]), .9)])
+    seed = np.zeros((400, 400), bool)
+    seed[125:171, 125:146] = True
+    regions, labels = prepare_masked_regions(image, [(np.array([[123, 123], [147, 123], [147, 172], [123, 172]]), .9)], seed)
     regions[0]["translation"] = "你好！"
-    output, mask = render_region(image, regions[0], labels, font)
+    class Restorer:
+        def inpaint(self, image, mask):
+            pytest.fail("The current solid-background path must not call LaMa")
+    output, mask = render_masked_region(image, regions[0], font, Restorer())
     assert mask.any()
     assert np.array_equal(np.array(image)[~mask], np.array(output)[~mask])
     assert not np.any(mask[labels != regions[0]["label"]])
@@ -238,6 +248,17 @@ def test_expanded_folder_subset_retains_original_output_layout(tmp_path):
     source.parent.mkdir(parents=True)
     Image.new("RGB", (20, 20), "white").save(source)
     journal = create_batch([source], {}, {}, state_root=tmp_path / "state", source_roots={source: folder})
-    page = json.loads(journal.read_text())["pages"][0]
+    page = json.loads(journal.read_text(encoding="utf-8"))["pages"][0]
     assert Path(page["output"]).parent == folder / "translated" / "part1" / "final"
     assert Path(page["report"]).parent == folder / "translated" / "part1" / "work"
+
+
+def test_batch_without_current_metadata_paths_requires_new_batch(tmp_path):
+    pipe = FakePipeline()
+    _, journal = batch(tmp_path, pipe)
+    saved = load(journal)
+    saved["pages"][0].pop("report")
+    journal.write_text(json.dumps(saved), encoding="utf-8")
+    with pytest.raises(ValueError, match="建立新批次"):
+        BatchRunner(pipe).run(journal)
+    assert not pipe.calls

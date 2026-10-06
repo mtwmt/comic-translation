@@ -30,9 +30,8 @@ def prepare_models(root: Path) -> None:
     from .fonts import ensure_bundled_font
     print("下載／驗證內附字型 Noto Sans CJK TC Bold", flush=True)
     ensure_bundled_font()
-    # Keep recorded legacy font files in the hash for existing AGY journals.
-    files = {str(p.relative_to(root)): sha256(p)
-             for name in [*MODEL_SPECS, "font"] for p in (root / name).rglob("*")
+    files = {p.relative_to(root).as_posix(): sha256(p)
+             for name in MODEL_SPECS for p in (root / name).rglob("*")
              if p.is_file() and ".cache" not in p.parts}
     atomic_json(root / "manifest-vision.json", {"schema": 1, "specs": MODEL_SPECS, "files": files})
     print("辨識模型已完成；圖片處理在本機，訂閱 CLI 文字翻譯需網路。", flush=True)
@@ -40,16 +39,14 @@ def prepare_models(root: Path) -> None:
 
 def verify_models(root: Path) -> str:
     manifest_path = root / "manifest-vision.json"
-    if not manifest_path.exists():
-        manifest_path = root / "manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        actual_specs = {k: v for k, v in manifest["specs"].items() if k in MODEL_SPECS}
-        if manifest.get("schema") != 1 or actual_specs != json.loads(json.dumps(MODEL_SPECS)):
+        if manifest.get("schema") != 1 or manifest["specs"] != json.loads(json.dumps(MODEL_SPECS)):
             raise ModelError("模型包版本不符，請重新準備模型。")
-        # Ignore unused translator files in an existing full-model manifest.
-        # Retain the prior AGY hash for recorded font files and saved batches.
-        files = {k: v for k, v in manifest["files"].items() if k.split("/")[0] in {*MODEL_SPECS, "font"}}
+        files = manifest["files"]
+        if not isinstance(files, dict) or any(not isinstance(name, str) or "\\" in name
+                or name.split("/")[0] not in MODEL_SPECS for name in files):
+            raise ModelError("辨識模型清單格式不符，請執行 offline.py prepare-models。")
         required = ["detector/inference.pdiparams", "detector/inference.json", "detector/inference.yml",
                     "ocr/pytorch_model.bin"]
         if not all(name in files for name in required):

@@ -16,6 +16,7 @@ assets/fonts/*.otf
 .venv
 .venv-*/
 venv/
+.venv311/
 env/
 ENV/
 __pycache__/
@@ -28,6 +29,7 @@ __pycache__/
 build/
 dist/
 *.spec
+!tools/packaging/windows.spec
 
 # Editor and OS files
 .vscode/

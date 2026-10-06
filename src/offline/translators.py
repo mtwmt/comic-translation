@@ -23,14 +23,16 @@ def list_models(provider):
     raise ValueError("不支援的翻譯引擎")
 
 
-def create_translator(provider=DEFAULT_PROVIDER, model=None, timeout=180):
+def create_translator(provider=DEFAULT_PROVIDER, model=None, timeout=180, options=None):
     model = model or DEFAULT_MODELS.get(provider)
+    from .generation_options import validate_options
+    options = validate_options(provider, **(options or {}))
     if provider == "agy":
         return agy_provider.AgyTranslator(timeout=timeout, model=model)
     if provider == "claude":
-        return claude_provider.ClaudeTranslator(timeout=timeout, model=model)
+        return claude_provider.ClaudeTranslator(timeout=timeout, model=model, **options)
     if provider == "codex":
-        return codex_provider.CodexTranslator(timeout=timeout, model=model)
+        return codex_provider.CodexTranslator(timeout=timeout, model=model, **options)
     raise ValueError("不支援的翻譯引擎")
 
 
@@ -54,4 +56,8 @@ def translator_from_settings(settings_path=None):
             preferences = {}
     except (OSError, ValueError):
         preferences = {}
-    return create_translator(*configured_choice(preferences))
+    from src.platforms import current as platform_support
+    from .generation_options import effective_options
+    provider, model = configured_choice(preferences)
+    options = effective_options(preferences, provider, model) if platform_support.TRANSLATION_OPTIONS else {}
+    return create_translator(provider, model, options=options)

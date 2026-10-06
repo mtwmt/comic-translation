@@ -30,5 +30,5 @@ def test_100_synthetic_pages_and_resume(tmp_path):
     assert pipeline.calls == 100
     assert BatchRunner(pipeline).run(journal)["skipped"] == 100
     assert pipeline.calls == 100
-    data = json.loads(journal.read_text())
+    data = json.loads(journal.read_text(encoding="utf-8"))
     assert [p["source"].split("page")[-1] for p in data["pages"]] == [f"{i}.png" for i in range(1, 101)]

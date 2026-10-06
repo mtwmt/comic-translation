@@ -12,15 +12,16 @@ from .storage import sha256
 from .images import load_image
 from .composition import render_page
 from .providers import LocalModels
-from .layout import find_regions, render_region, LAYOUT_VERSION
+from .layout import prepare_masked_regions, render_masked_region, plan_page_lettering, LAYOUT_VERSION
 from .fonts import resolve_font, FontFace
 
-PIPELINE_VERSION = "comic-prototype-5"
+PIPELINE_VERSION = "comic-prototype-6"
 
 
 class TranslationPipeline:
-    def __init__(self, models: Path, translator=None, restoration="auto"):
+    def __init__(self, models: Path, translator=None, *, region_layout=None):
         self.translator = translator
+        self.region_layout = region_layout
         model_hash = verify_models(models)
         self.fingerprint = {"pipeline": PIPELINE_VERSION, "models": model_hash,
                             "layout": LAYOUT_VERSION,
@@ -28,21 +29,17 @@ class TranslationPipeline:
                                 "paddleocr", "paddlepaddle", "manga-ocr", "transformers", "torch",
                                 "Pillow", "opencv-contrib-python", "opencc-python-reimplemented", "jieba")}}
         self.fingerprint["translator"] = translator.fingerprint if translator else {"provider": "analysis-only"}
+        if region_layout is not None:
+            self.fingerprint["region_grouping"] = region_layout.VERSION
         self.models = LocalModels(models)
         if translator is None:
             self.font = None
         else:
-            font_path, self.fingerprint["font"] = resolve_font(models)
+            font_path, self.fingerprint["font"] = resolve_font()
             self.font = FontFace(font_path, self.fingerprint["font"].get("index", 0))
-        if restoration not in {"auto", "legacy", "enhanced"}:
-            raise ValueError("不支援的清字模式")
-        self.restorer = None
-        if restoration == "enhanced" or restoration == "auto" and (models / "restoration/manifest.json").exists():
-            from .restoration import RestorationModels
-            self.restorer = RestorationModels(models)
-            self.fingerprint["restoration"] = self.restorer.fingerprint
-        else:
-            self.fingerprint["restoration"] = "legacy-white-fill"
+        from .restoration import RestorationModels
+        self.restorer = RestorationModels(models)
+        self.fingerprint["restoration"] = self.restorer.fingerprint
 
     def process(self, source: Path, glossary: dict, progress=lambda stage: None, analyze_only=False):
         if not analyze_only and self.translator is None:
@@ -54,22 +51,18 @@ class TranslationPipeline:
             self.translator.preflight()
         image = load_image(source)
         progress("偵測文字")
-        if self.restorer is not None:
-            from .layout import prepare_masked_regions
-            detections, text_mask, line_boxes = self.restorer.detect(image)
-            try:
-                extra = self.models.detect(image, **LOOSE_DETECTION)
-            except ModelError:
-                extra = []
-            found = len(detections)
-            detections, text_mask = recover_missed_text(image, detections, text_mask, extra)
-            recovered = [poly for poly, _ in detections[found:]]
-            regions, labels = prepare_masked_regions(image, detections, text_mask, line_boxes)
-            for region in regions:
-                region["recovered"] = any(is_recovered_region(region, poly) for poly in recovered)
-        else:
-            detections = self.models.detect(image)
-            regions, labels = find_regions(image, detections)
+        detections, text_mask, line_boxes = self.restorer.detect(image)
+        try:
+            extra = self.models.detect(image, **LOOSE_DETECTION)
+        except ModelError:
+            extra = []
+        found = len(detections)
+        detections, text_mask = recover_missed_text(image, detections, text_mask, extra)
+        recovered = [poly for poly, _ in detections[found:]]
+        regions, _ = prepare_masked_regions(image, detections, text_mask, line_boxes,
+                                            refine=getattr(self.region_layout, "refine_mask", None))
+        for region in regions:
+            region["recovered"] = any(is_recovered_region(region, poly) for poly in recovered)
         progress("日文辨識")
         records = []
         for region in regions:
@@ -99,6 +92,10 @@ class TranslationPipeline:
                     record["alternatives"] = alternatives
             records.append(record)
         regions = [region for region in regions if not region.get("discard")]
+        if self.region_layout is not None:
+            self.region_layout.resolve_duplicate_regions(regions)
+            active_ids = {region["id"] for region in regions if region.get("enabled", True)}
+            records = [record for record in records if record["id"] in active_ids]
         if not analyze_only:
             progress(f"{getattr(self.translator, 'provider', '').upper()} {getattr(self.translator, 'model', '')} 翻譯（僅傳文字）")
         translated = {}
@@ -114,15 +111,11 @@ class TranslationPipeline:
                 region["translation"] = translated[region["id"]]
                 region["text_status"] = "translated"
         font_plan = None
-        if self.restorer is not None and not analyze_only:
-            from .layout import plan_page_lettering
+        if not analyze_only:
             font_plan = plan_page_lettering(image, regions, self.font)
 
         def render(region):
-            if self.restorer is not None:
-                from .layout import render_masked_region
-                return render_masked_region(image, region, self.font, self.restorer)
-            return render_region(image, region, labels, self.font)
+            return render_masked_region(image, region, self.font, self.restorer)
 
         rendered, summary, mask = render_page(image, regions, render,
             missing_reason="尚未翻譯，可在預覽填寫譯文" if analyze_only else translation_error or "缺少譯文")

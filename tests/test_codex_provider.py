@@ -42,3 +42,22 @@ def test_codex_translates_read_only_and_checks_events():
         codex(codex_run(failed, {"a": "好"})).translate(ROWS, {})
     with pytest.raises(ModelError, match="安全檢查"):
         codex(codex_run(ok, {"a": "好"}, status="Logged in using an API key")).translate(ROWS, {})
+
+
+@pytest.mark.parametrize('fast', [True, False])
+def test_effort_and_fast_are_passed_to_exec_and_recorded(fast):
+    calls = []
+    fake = codex_run([{'type': 'turn.completed'}], {'a': '久等了！'})
+    def run(args, timeout, **kwargs):
+        calls.append(args)
+        return fake(args, timeout, **kwargs)
+    translator = codex(run)
+    translator.options = {'effort': 'xhigh', 'fast': fast}
+    assert translator.translate(ROWS, {}) == {'a': '久等了！'}
+    config = [calls[-1][i + 1] for i, arg in enumerate(calls[-1]) if arg == '-c']
+    assert 'model_reasoning_effort="xhigh"' in config
+    # Off leaves the user's own Codex service tier untouched.
+    speed = [value for value in config if value.startswith(('service_tier', 'features.fast_mode'))]
+    assert speed == (['service_tier="fast"', 'features.fast_mode=true'] if fast else [])
+    assert translator.last_metadata['effort'] == 'xhigh'
+    assert translator.last_metadata['fast'] is fast

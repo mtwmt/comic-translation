@@ -8,6 +8,7 @@ from tkinter import filedialog
 from src.offline.batch import parse_glossary
 from src.offline.storage import atomic_json
 from src.offline.translators import DEFAULT_MODELS, PROVIDERS, configured_choice, list_models
+from src.platforms import current as platform_support
 
 
 class SettingsMixin:
@@ -73,6 +74,36 @@ class SettingsMixin:
     def translator_choice(self):
         return configured_choice(getattr(self, "preferences", {}))
 
+    def pipeline_choice(self):
+        choice = self.translator_choice()
+        from src.offline.generation_options import effective_options
+        options = effective_options(self.preferences, *choice) if platform_support.TRANSLATION_OPTIONS else {}
+        return (*choice, 180, options) if options else choice
+
+    def refresh_translation_controls(self):
+        controls = getattr(self, "translation_controls", None)
+        if controls:
+            controls.refresh()
+
+    def cached_model_names(self, provider):
+        if not platform_support.CACHE_MODEL_CATALOG:
+            return []
+        catalogs = self.preferences.get("translator_model_catalogs", {})
+        names = catalogs.get(provider, []) if isinstance(catalogs, dict) else []
+        from src.offline.cli_common import MODEL_NAME
+        return list(dict.fromkeys(name for name in names if isinstance(name, str)
+                                 and MODEL_NAME.fullmatch(name))) if isinstance(names, list) else []
+
+    def initialize_model_list(self):
+        provider = self.provider_from_label()
+        capabilities = self.preferences.get("translator_model_capabilities", {})
+        provider_caps = capabilities.get(provider) if isinstance(capabilities, dict) else None
+        missing_options = platform_support.TRANSLATION_OPTIONS and provider in ("codex", "claude") \
+            and (not isinstance(provider_caps, dict) or not provider_caps
+                 or provider == "claude" and self.model_name.get().strip() not in provider_caps)
+        if platform_support.CACHE_MODEL_CATALOG and (not self.cached_model_names(provider) or missing_options):
+            self._request_model_list(quiet=True)
+
     def save_translator_choice(self, provider, model):
         models = dict(self.preferences.get("translator_models") or {})
         models[provider] = model
@@ -90,6 +121,7 @@ class SettingsMixin:
         saved = (self.preferences.get("translator_models") or {}).get(provider)
         model = saved if isinstance(saved, str) and saved else DEFAULT_MODELS[provider]
         self.model_name.set(model)
+        self.model_box.configure(values=self.cached_model_names(provider))
         self.apply_translator_choice(provider, model)
         self.refresh_model_list()
 
@@ -105,25 +137,55 @@ class SettingsMixin:
             self.status.set(f"無法儲存翻譯引擎設定：{error}")
             return
         self.status.set(f"翻譯引擎：{PROVIDERS[provider]}／{model}。新批次使用；續跑舊批次須沿用原模型。")
+        self.refresh_translation_controls()
 
     def refresh_model_list(self):
         """Ask the chosen CLI which models it offers (background; never blocks Tk)."""
+        self._request_model_list()
+
+    def _request_model_list(self, quiet=False):
+        if self.busy:
+            return
         provider = self.provider_from_label()
-        self.status.set(f"正在向 {PROVIDERS[provider]} 查詢可用模型…")
+        request_id = getattr(self, "model_request_id", 0) + 1
+        self.model_request_id = request_id
+        if not quiet:
+            self.status.set(f"正在向 {PROVIDERS[provider]} 查詢可用模型…")
         def fetch():
             try:
-                self.events.put({"models": provider, "items": list_models(provider)})
+                items = list_models(provider)
+                self.events.put({"models": provider, "request_id": request_id, "quiet": quiet, "items": items,
+                                 "capabilities": getattr(items, "capabilities", {})})
             except Exception as error:
-                self.events.put({"models": provider, "items": [], "error_text": str(error)})
+                self.events.put({"models": provider, "request_id": request_id, "quiet": quiet, "items": [], "error_text": str(error)})
         import threading
         threading.Thread(target=fetch, daemon=True).start()
 
     def show_model_list(self, event):
         if event["models"] != self.provider_from_label():
             return
+        if "request_id" in event and event["request_id"] != getattr(self, "model_request_id", None):
+            return
         names = [name for name, _ in event["items"]]
-        self.model_box.configure(values=names)
-        if event.get("error_text"):
-            self.status.set(f"無法取得模型清單，可直接輸入模型名稱：{event['error_text']}")
-        else:
-            self.status.set(f"{PROVIDERS[event['models']]} 有 {len(names)} 個模型可選；也可直接輸入名稱。")
+        error = event.get("error_text")
+        if names and not error:
+            if platform_support.CACHE_MODEL_CATALOG:
+                catalogs = self.preferences.get("translator_model_catalogs", {})
+                catalogs = dict(catalogs) if isinstance(catalogs, dict) else {}
+                catalogs[event["models"]] = names
+                capabilities = self.preferences.get("translator_model_capabilities", {})
+                capabilities = dict(capabilities) if isinstance(capabilities, dict) else {}
+                capabilities[event["models"]] = event.get("capabilities", {})
+                try:
+                    self.write_settings(translator_model_catalogs=catalogs,
+                                        translator_model_capabilities=capabilities)
+                except OSError as save_error:
+                    error = f"已取得清單，但無法保存：{save_error}"
+            self.model_box.configure(values=names)
+        self.refresh_translation_controls()
+        if self.busy:
+            return  # A metadata response must not replace the running-page status.
+        if error:
+            self.status.set(f"模型清單查詢或保存失敗，保留既有選項，也可直接輸入名稱：{error}")
+        elif not event.get("quiet"):
+            self.status.set(f"{PROVIDERS[event['models']]} CLI 回傳 {len(names)} 個模型選項；實際權限依帳號與額度，也可直接輸入名稱。")

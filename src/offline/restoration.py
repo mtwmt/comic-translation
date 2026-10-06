@@ -15,6 +15,7 @@ import numpy as np
 from PIL import Image
 
 from .models import ModelError
+from src.platforms import current as platform_support
 from .storage import atomic_json, sha256
 
 RESTORATION_VERSION = "ctd-lama-1"
@@ -58,7 +59,7 @@ def verify_restoration_models(root: Path):
     import json
     folder = root / "restoration"
     try:
-        manifest = json.loads((folder / "manifest.json").read_text())
+        manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
         if manifest != {"schema": 1, "specs": RESTORATION_SPECS}:
             raise ValueError("manifest mismatch")
         for name, spec in RESTORATION_SPECS.items():
@@ -113,7 +114,7 @@ class RestorationModels:
         canvas[:rh, :rw] = cv2.resize(rgb, (rw, rh))
         try:
             if self.detector is None:
-                self.detector = cv2.dnn.readNetFromONNX(str(self.root / "comictextdetector.pt.onnx"))
+                self.detector = platform_support.load_onnx_model(self.root / "comictextdetector.pt.onnx")
             self.detector.setInput(cv2.dnn.blobFromImage(canvas, 1 / 255.0))
             outputs = self.detector.forward(self.detector.getUnconnectedOutLayersNames())
             # Resolve by shape: output ordering differs between OpenCV releases.
@@ -192,7 +193,7 @@ class RestorationModels:
         holes = np.pad(resized_mask, ((0, ph), (0, pw)), mode="symmetric")
         try:
             if self.lama is None:
-                self.lama = torch.jit.load(str(self.root / "big-lama.pt"), map_location="cpu").eval()
+                self.lama = platform_support.load_repair_model(self.root / "big-lama.pt")
             with torch.inference_mode():
                 prediction = self.lama(torch.from_numpy(pixels.transpose(2, 0, 1).copy()).float()[None] / 255,
                                        torch.from_numpy(holes.copy()).float()[None, None])

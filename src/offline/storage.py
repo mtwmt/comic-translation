@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -45,6 +46,16 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _replace(source: Path, target: Path) -> None:
+    """Windows briefly denies replacing a target another writer is replacing."""
+    for delay in (.01, .02, .05, .1, .2):
+        try:
+            return os.replace(source, target)
+        except PermissionError:
+            time.sleep(delay)
+    os.replace(source, target)
+
+
 @contextmanager
 def _temporary_output(path: Path):
     """Use a unique sibling so concurrent writers cannot share a temporary file."""
@@ -56,7 +67,7 @@ def _temporary_output(path: Path):
             yield temporary, stream
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        _replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
 

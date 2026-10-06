@@ -7,13 +7,15 @@ import shutil
 
 from .cli_common import MODEL_NAME, CliNotInstalled, check_model_name, run_cli
 from .models import ModelError
+from .model_catalog import ModelCatalog
+from .generation_options import EFFORT_LABELS
 from .storage import sha256
+from src.platforms import current as platform_support
 from .translation_common import (PROMPT_VERSION, check_records, request_payload,
                                  translation_schema, validate_translations)
 
 INSTALL_URL = "https://antigravity.google/docs/cli/install/"
 DEFAULT_MODEL = "gemini-3.8-flash-medium"
-MODEL = DEFAULT_MODEL  # backwards-compatible name
 
 
 def parse_translation(stdout, records, glossary, model=DEFAULT_MODEL):
@@ -53,7 +55,22 @@ def list_models(executable=None):
         identifier, _, label = line.partition("\t")
         if label and MODEL_NAME.fullmatch(identifier.strip()):
             models.append((identifier.strip(), label.strip()))
-    return models
+    return ModelCatalog(models, model_capabilities(name for name, _ in models))
+
+
+def model_capabilities(names):
+    """Only expose effort variants actually returned by AGY's catalog."""
+    families, selected = {}, {}
+    for name in names:
+        if not isinstance(name, str) or not MODEL_NAME.fullmatch(name):
+            continue
+        family, _, level = name.rpartition("-")
+        if family and level in EFFORT_LABELS:
+            families.setdefault(family, {})[level] = name
+            selected[name] = (family, level)
+    return {name: {"efforts": list(families[family]), "fast": False,
+                   "effort_models": families[family], "selected_effort": level}
+            for name, (family, level) in selected.items()}
 
 
 class AgyTranslator:
@@ -71,11 +88,13 @@ class AgyTranslator:
                             "normalization": "s2t-protected-names-1", "cli_sha256": sha256(Path(self.executable))}
 
     def _run(self, arguments, timeout, input_text=None):
-        return run_cli(self.executable, arguments, timeout, "AGY", input_text=input_text)
+        label = platform_support.agy_call_label(arguments, timeout)
+        return run_cli(self.executable, arguments, timeout, label, input_text=input_text)
 
     def preflight(self):
         try:
-            data = json.loads(self._run(["-p", "/config", "--output-format", "json", "--print-timeout", "30s"], 45))
+            arguments = ["-p", "/config", "--output-format", "json", "--print-timeout", "30s"]
+            data = json.loads(platform_support.query_agy_configuration(self._run, arguments))
             config = data["command"]["data"]["config"]
             if data.get("status") != "SUCCESS" or config.get("useG1Credits") is not False:
                 raise ValueError("額外 credits 未明確停用")

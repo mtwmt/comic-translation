@@ -14,12 +14,14 @@ from pathlib import Path
 from PIL import Image
 
 from .models import ModelError
-# Output helpers remain available here for older callers.
+from .cancellation import OperationCancelled
 from .storage import available_path, atomic_json, save_png, sha256
 
 EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 EXCLUDED = {"translated", ".comic-translator", "models", ".cache", ".git", ".venv", "offline-runs"}
-STATE_ROOT = Path(__file__).resolve().parents[2] / ".comic-translator"
+from src.runtime_paths import app_root
+
+STATE_ROOT = app_root() / ".comic-translator"
 
 
 def parse_glossary(text: str) -> dict[str, str]:
@@ -167,6 +169,8 @@ class BatchRunner:
         data = json.loads(journal.read_text(encoding="utf-8"))
         if data.get("schema") != 1:
             raise ValueError("不支援的批次紀錄版本")
+        if any("report" not in page or "mask" not in page for page in data["pages"]):
+            raise ValueError("批次紀錄缺少報告或遮罩位置，請建立新批次")
         if data["fingerprint"] != self.pipeline.fingerprint:
             raise ValueError("模型或程式版本已變更，請建立新批次以保留舊結果")
         if data.get("glossary_hash") != glossary_hash(data["glossary"]):
@@ -199,22 +203,23 @@ class BatchRunner:
                 if page["state"] == "failed" and not retry_failed and current_hash == page["source_hash"]:
                     self.on_event({"progress": index + 1, "total": len(data["pages"]), "stage": "略過先前失敗圖片；可選擇重試"})
                     continue
-                metadata_dir = Path(page["report"]).parent if "report" in page else None
-                report_path = Path(page.get("report", output.with_suffix(".json")))
+                metadata_dir = Path(page["report"]).parent
+                report_path = Path(page["report"])
                 if output.exists() or report_path.exists():
                     output = available_path(output, reserved, data["id"], metadata_dir)
                     page["output"] = str(output)
-                    if metadata_dir:
-                        page["report"] = str(metadata_dir / (output.stem + ".json"))
-                        page["mask"] = str(metadata_dir / (output.stem + ".mask.png"))
-                report_path = Path(page.get("report", output.with_suffix(".json")))
-                mask_path = Path(page.get("mask", output.with_name(output.stem + ".mask.png")))
+                    page["report"] = str(metadata_dir / (output.stem + ".json"))
+                    page["mask"] = str(metadata_dir / (output.stem + ".mask.png"))
+                report_path = Path(page["report"])
+                mask_path = Path(page["mask"])
                 page.update(state="running", source_hash=current_hash, output_hash=None, reason="")
                 atomic_json(journal, data)
                 self.on_event({"index": index + 1, "total": len(data["pages"]), "source": str(source), "stage": "開始"})
                 image, report, mask = self.pipeline.process(source, data["glossary"],
                     lambda stage: self.on_event({"index": index + 1, "total": len(data["pages"]),
                                                  "source": str(source), "stage": stage}))
+                if hasattr(self.pipeline, "check_cancel"):
+                    self.pipeline.check_cancel()
                 if sha256(source) != current_hash:
                     raise ValueError("處理期間來源檔案有變更，結果未保存")
                 output.parent.mkdir(parents=True, exist_ok=True)
@@ -223,13 +228,17 @@ class BatchRunner:
                     save_png(mask_path, mask)
                     page["output_hash"] = sha256(output)
                 report["output_path"] = str(output)
-                if metadata_dir:
-                    report["metadata_dir"] = str(metadata_dir)
+                report["metadata_dir"] = str(metadata_dir)
                 atomic_json(report_path, report)
                 page.update(state=report["status"], reason=report.get("reason", ""),
                             translated=report["translated"], preserved=report["preserved"],
                             text_translated=report.get("text_translated", report["translated"]),
                             review_required=report.get("review_required", 0))
+            except OperationCancelled as error:
+                page.update(state="stopped", reason=str(error))
+                data["status"] = "stopped"
+                atomic_json(journal, data)
+                break
             except (ModelError, MemoryError) as error:
                 page.update(state="stopped", reason=str(error))
                 data["status"] = "stopped"
@@ -249,7 +258,7 @@ class BatchRunner:
             atomic_json(journal, data)
             self.on_event({"index": index + 1, "total": len(data["pages"]), "source": str(source),
                            "state": page["state"], "reason": page["reason"], "output": page["output"],
-                           "report": page.get("report", str(Path(page["output"]).with_suffix(".json"))),
+                           "report": page["report"],
                            "progress": index + 1,
                            "translated": page.get("translated", 0), "preserved": page.get("preserved", 0),
                            "review_required": page.get("review_required", 0)})

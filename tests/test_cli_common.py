@@ -44,6 +44,56 @@ def test_error_does_not_expose_cli_output():
     assert "PRIVATE" not in str(error.value) and "SECRET" not in str(error.value)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows working directory locks")
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_windows_workspace_lock_preserves_cli_result_or_error(tmp_path, monkeypatch, exit_code):
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                    ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    # Keep test-created workspaces under pytest's own temporary directory.
+    monkeypatch.setattr(cli_common.tempfile, "tempdir", str(tmp_path))
+    popen = subprocess.Popen
+    locks = []
+
+    def start(*args, **kwargs):
+        workspace = Path(kwargs["cwd"])
+        # An open CLI-created file must reproduce a real sharing violation.
+        locked_file = workspace / "busy.txt"
+        locked_file.write_text("test fixture", encoding="utf-8")
+        handle = kernel32.CreateFileW(str(locked_file), 0x80000000, 1, None, 3, 0, None)
+        assert handle != ctypes.c_void_p(-1).value
+        locks.append((handle, workspace))
+        with pytest.raises(PermissionError) as locked:
+            locked_file.unlink()
+        assert locked.value.winerror == 32
+        return popen(*args, **kwargs)
+
+    monkeypatch.setattr(cli_common.subprocess, "Popen", start)
+    try:
+        def query():
+            return cli_common.run_cli(sys.executable, ["-c",
+                f"import sys; print('model-id\\tModel label'); sys.exit({exit_code})"], 10, "Test")
+
+        if exit_code:
+            with pytest.raises(ModelError, match="結束碼 7"):
+                query()
+        else:
+            assert query().strip() == "model-id\tModel label"
+        assert locks and locks[0][1].exists()
+    finally:
+        for handle, workspace in locks:
+            kernel32.CloseHandle(handle)
+            # Only delete the exact directory created inside this test's root.
+            assert workspace.resolve().parent == tmp_path.resolve()
+            cli_common.shutil.rmtree(workspace)
+
+
 def test_timeout_while_child_does_not_read_stdin_reaps_process(monkeypatch):
     started = []
     popen = subprocess.Popen
